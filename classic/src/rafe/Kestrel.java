@@ -94,6 +94,28 @@ public class Kestrel extends AdvancedRobot {
      */
     private static final double GUN_DECAY = 0.99;
 
+    /**
+     * Every completed shot of ours, as a point in feature space.
+     *
+     * The segmented buffers had to choose between adapting and having enough evidence:
+     * fading them tracked an opponent who changed, at the cost of the ones who did not.
+     * Nearest-neighbour estimation does not face that trade, because it never splits the
+     * evidence in the first place -- and the ring buffer *is* the memory, so how far back
+     * the gun looks is one number rather than a decay rate per segmentation.
+     */
+    private static final int MAX_GUN_RECORDS = 6000;
+    private static final double[][] gunRecordFeatures = new double[MAX_GUN_RECORDS][];
+    private static final double[] gunRecordFactor = new double[MAX_GUN_RECORDS];
+    private static int gunRecordCount;
+    private static int gunRecordCursor;
+
+    /** Below this much experience the blended buffers still aim; they warm up faster. */
+    private static final int GUN_KNN_MINIMUM = 40;
+
+    private static final double[] GUN_FEATURE_WEIGHTS = {2.0, 3.0, 1.0, 1.5, 1.0, 1.5, 1.0};
+
+    private int enemyTicksSinceReversal;
+
     /** Neighbours consulted, as a multiple of the square root of experience. */
     private static final double K_SCALE = 0.35;
 
@@ -191,7 +213,11 @@ public class Kestrel extends AdvancedRobot {
         // through zero, so a direction reversal doesn't flip on noise.
         double enemyLateralSpeed = e.getVelocity() * Math.sin(e.getHeadingRadians() - absBearing);
         if (Math.abs(enemyLateralSpeed) > 0.1) {
+            int was = enemyDirection;
             enemyDirection = enemyLateralSpeed > 0 ? 1 : -1;
+            enemyTicksSinceReversal = enemyDirection == was ? enemyTicksSinceReversal + 1 : 0;
+        } else {
+            enemyTicksSinceReversal++;
         }
 
         advanceEnemyWaves();
@@ -622,9 +648,20 @@ public class Kestrel extends AdvancedRobot {
         wave.speed = speed;
         wave.accel = accel;
         wave.wall = wall;
+        wave.features = new double[] {
+            limit(0, (e.getDistance() / wave.bulletSpeed) / 50, 1),
+            Math.abs(enemyLateralSpeed) / 8,
+            (e.getVelocity() * Math.cos(e.getHeadingRadians() - absBearing) + 8) / 16,
+            enemyWallRoom(e.getDistance(), absBearing, enemyDirection),
+            enemyWallRoom(e.getDistance(), absBearing, -enemyDirection),
+            accel / 2.0,
+            limit(0, enemyTicksSinceReversal / 40.0, 1),
+        };
         gunWaves.add(wave);
 
-        double factor = (double) (bestBin(range, speed, accel, wall) - MIDDLE) / MIDDLE;
+        double factor = gunRecordCount >= GUN_KNN_MINIMUM
+                ? knnFactor(wave.features, e.getDistance(), wave.maxEscape)
+                : (double) (bestBin(range, speed, accel, wall) - MIDDLE) / MIDDLE;
         double aim = absBearing + factor * wave.maxEscape * enemyDirection;
 
         double gunTurn = Utils.normalRelativeAngle(aim - getGunHeadingRadians());
@@ -641,6 +678,84 @@ public class Kestrel extends AdvancedRobot {
         }
     }
 
+    /**
+     * Where to aim, as a fraction of the escape range.
+     *
+     * Takes the most similar shots we have taken before and asks which angle the largest
+     * cluster of them landed at, measured with a kernel as wide as the enemy is -- there
+     * is no point distinguishing two angles a bullet could not tell apart. Every one of
+     * those past shots votes at its own angle, so the answer is always an angle the enemy
+     * has actually been at, never the average of two places they never were.
+     */
+    private double knnFactor(double[] features, double distance, double maxEscape) {
+        int k = (int) limit(1, Math.round(0.6 * Math.sqrt(gunRecordCount)), 120);
+        int[] near = new int[k];
+        double[] far = new double[k];
+        int found = 0;
+        double worst = Double.POSITIVE_INFINITY;
+        int worstSlot = 0;
+
+        for (int record = 0; record < gunRecordCount; record++) {
+            double[] other = gunRecordFeatures[record];
+            double gap = 0;
+            for (int f = 0; f < GUN_FEATURE_WEIGHTS.length; f++) {
+                double delta = (other[f] - features[f]) * GUN_FEATURE_WEIGHTS[f];
+                gap += delta * delta;
+            }
+            if (found < k) {
+                near[found] = record;
+                far[found] = gap;
+                found++;
+                if (found == k) {
+                    worst = -1;
+                    for (int n = 0; n < k; n++) {
+                        if (far[n] > worst) {
+                            worst = far[n];
+                            worstSlot = n;
+                        }
+                    }
+                }
+            } else if (gap < worst) {
+                near[worstSlot] = record;
+                far[worstSlot] = gap;
+                worst = -1;
+                for (int n = 0; n < k; n++) {
+                    if (far[n] > worst) {
+                        worst = far[n];
+                        worstSlot = n;
+                    }
+                }
+            }
+        }
+
+        double bandwidth = Math.max(Math.atan(18 / Math.max(distance, 1)) / maxEscape, 0.02);
+        double best = 0;
+        double bestScore = -1;
+        for (int i = 0; i < found; i++) {
+            double candidate = gunRecordFactor[near[i]];
+            double score = 0;
+            for (int j = 0; j < found; j++) {
+                double spread = (gunRecordFactor[near[j]] - candidate) / bandwidth;
+                score += Math.exp(-0.5 * spread * spread) / (1 + far[j]);
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    /** How far the enemy can keep sliding one way before a wall stops them, 0 to 1. */
+    private double enemyWallRoom(double distance, double absBearing, int direction) {
+        double angle = 0;
+        while (angle < Math.PI / 2
+                && field.contains(project(myLocation, absBearing + direction * angle, distance))) {
+            angle += 0.1;
+        }
+        return angle / (Math.PI / 2);
+    }
+
     private void advanceGunWaves() {
         for (int i = gunWaves.size() - 1; i >= 0; i--) {
             GunWave wave = gunWaves.get(i);
@@ -655,6 +770,13 @@ public class Kestrel extends AdvancedRobot {
         double offset = Utils.normalRelativeAngle(absoluteBearing(wave.fireLocation, at) - wave.directAngle);
         double factor = limit(-1, offset / wave.maxEscape * wave.direction, 1);
         int index = (int) Math.round(factor * MIDDLE + MIDDLE);
+
+        if (wave.features != null) {
+            gunRecordFeatures[gunRecordCursor] = wave.features;
+            gunRecordFactor[gunRecordCursor] = factor;
+            gunRecordCursor = (gunRecordCursor + 1) % MAX_GUN_RECORDS;
+            gunRecordCount = Math.min(gunRecordCount + 1, MAX_GUN_RECORDS);
+        }
 
         smear(gunFlat, index, 1.0);
         smear(gunByRange[wave.range], index, 1.0);
@@ -839,5 +961,6 @@ public class Kestrel extends AdvancedRobot {
         int speed;
         int accel;
         int wall;
+        double[] features;
     }
 }
