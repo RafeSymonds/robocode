@@ -103,7 +103,7 @@ public class Kestrel extends AdvancedRobot {
      * evidence in the first place -- and the ring buffer *is* the memory, so how far back
      * the gun looks is one number rather than a decay rate per segmentation.
      */
-    private static final int MAX_GUN_RECORDS = 6000;
+    private static final int MAX_GUN_RECORDS = 20000;
     private static final double[][] gunRecordFeatures = new double[MAX_GUN_RECORDS][];
     private static final double[] gunRecordFactor = new double[MAX_GUN_RECORDS];
     private static int gunRecordCount;
@@ -115,6 +115,7 @@ public class Kestrel extends AdvancedRobot {
     private static final double[] GUN_FEATURE_WEIGHTS = {2.0, 3.0, 1.0, 1.5, 1.0, 1.5, 1.0};
 
     private int enemyTicksSinceReversal;
+    private Double aimFactor;
 
     /** Neighbours consulted, as a multiple of the square root of experience. */
     private static final double K_SCALE = 0.35;
@@ -424,8 +425,6 @@ public class Kestrel extends AdvancedRobot {
         wave.neighbours = new int[k];
         wave.neighbourCount = 0;
 
-        double worst = Double.POSITIVE_INFINITY;
-        int worstSlot = 0;
         double[] distances = new double[k];
 
         for (int record = 0; record < recordCount; record++) {
@@ -439,26 +438,15 @@ public class Kestrel extends AdvancedRobot {
             if (wave.neighbourCount < k) {
                 wave.neighbours[wave.neighbourCount] = record;
                 distances[wave.neighbourCount] = distance;
-                wave.neighbourCount++;
-                if (wave.neighbourCount == k) {
-                    worst = -1;
-                    for (int n = 0; n < k; n++) {
-                        if (distances[n] > worst) {
-                            worst = distances[n];
-                            worstSlot = n;
-                        }
+                if (++wave.neighbourCount == k) {
+                    for (int n = k / 2 - 1; n >= 0; n--) {
+                        sink(distances, wave.neighbours, k, n);
                     }
                 }
-            } else if (distance < worst) {
-                wave.neighbours[worstSlot] = record;
-                distances[worstSlot] = distance;
-                worst = -1;
-                for (int n = 0; n < k; n++) {
-                    if (distances[n] > worst) {
-                        worst = distances[n];
-                        worstSlot = n;
-                    }
-                }
+            } else if (distance < distances[0]) {
+                wave.neighbours[0] = record;
+                distances[0] = distance;
+                sink(distances, wave.neighbours, k, 0);
             }
         }
     }
@@ -659,9 +647,16 @@ public class Kestrel extends AdvancedRobot {
         };
         gunWaves.add(wave);
 
-        double factor = gunRecordCount >= GUN_KNN_MINIMUM
-                ? knnFactor(wave.features, e.getDistance(), wave.maxEscape)
-                : (double) (bestBin(range, speed, accel, wall) - MIDDLE) / MIDDLE;
+        // Re-deriving the aim on a tick we could not fire on anyway is wasted work, and
+        // the work is the expensive part. The gun still tracks the enemy every tick --
+        // only the offset from dead-on is held over, and it is recomputed with a few
+        // ticks of cooling left, which is longer than the gun needs to swing.
+        if (getGunHeat() <= 3 * getGunCoolingRate() || aimFactor == null) {
+            aimFactor = gunRecordCount >= GUN_KNN_MINIMUM
+                    ? knnFactor(wave.features, e.getDistance(), wave.maxEscape)
+                    : (double) (bestBin(range, speed, accel, wall) - MIDDLE) / MIDDLE;
+        }
+        double factor = aimFactor;
         double aim = absBearing + factor * wave.maxEscape * enemyDirection;
 
         double gunTurn = Utils.normalRelativeAngle(aim - getGunHeadingRadians());
@@ -692,8 +687,6 @@ public class Kestrel extends AdvancedRobot {
         int[] near = new int[k];
         double[] far = new double[k];
         int found = 0;
-        double worst = Double.POSITIVE_INFINITY;
-        int worstSlot = 0;
 
         for (int record = 0; record < gunRecordCount; record++) {
             double[] other = gunRecordFeatures[record];
@@ -705,26 +698,15 @@ public class Kestrel extends AdvancedRobot {
             if (found < k) {
                 near[found] = record;
                 far[found] = gap;
-                found++;
-                if (found == k) {
-                    worst = -1;
-                    for (int n = 0; n < k; n++) {
-                        if (far[n] > worst) {
-                            worst = far[n];
-                            worstSlot = n;
-                        }
+                if (++found == k) {
+                    for (int n = k / 2 - 1; n >= 0; n--) {
+                        sink(far, near, k, n);
                     }
                 }
-            } else if (gap < worst) {
-                near[worstSlot] = record;
-                far[worstSlot] = gap;
-                worst = -1;
-                for (int n = 0; n < k; n++) {
-                    if (far[n] > worst) {
-                        worst = far[n];
-                        worstSlot = n;
-                    }
-                }
+            } else if (gap < far[0]) {
+                near[0] = record;
+                far[0] = gap;
+                sink(far, near, k, 0);
             }
         }
 
@@ -911,6 +893,34 @@ public class Kestrel extends AdvancedRobot {
     // =========================================================================
     // Geometry
     // =========================================================================
+
+    /**
+     * Keeps the k smallest distances seen so far, as a heap with the *worst* of them on
+     * top. Replacing the worst then costs a sift rather than a rescan of all k slots,
+     * which matters: the naive version was O(n*k) per shot and cost us real turns --
+     * Robocode freezes out a robot that is still thinking when the turn ends.
+     */
+    private static void sink(double[] far, int[] near, int size, int root) {
+        while (true) {
+            int child = 2 * root + 1;
+            if (child >= size) {
+                return;
+            }
+            if (child + 1 < size && far[child + 1] > far[child]) {
+                child++;
+            }
+            if (far[child] <= far[root]) {
+                return;
+            }
+            double distance = far[root];
+            far[root] = far[child];
+            far[child] = distance;
+            int index = near[root];
+            near[root] = near[child];
+            near[child] = index;
+            root = child;
+        }
+    }
 
     private static double bulletSpeed(double power) {
         return 20 - 3 * power;
