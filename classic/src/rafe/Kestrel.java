@@ -1,6 +1,7 @@
 package rafe;
 
 import robocode.AdvancedRobot;
+import robocode.Bullet;
 import robocode.BulletHitBulletEvent;
 import robocode.HitByBulletEvent;
 import robocode.HitRobotEvent;
@@ -12,6 +13,7 @@ import java.awt.Color;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -80,6 +82,18 @@ public class Kestrel extends AdvancedRobot {
     private static int recordCount;
     private static int recordCursor;
 
+    /**
+     * How much of the fine buffers' evidence survives each new observation.
+     *
+     * Only the segmented buffers fade. They are the ones that describe *this* situation,
+     * and a bot worth beating changes how it handles a situation once we start hitting it
+     * there. The coarse buffers keep everything, because they are the fallback for when
+     * the fine ones have nothing to say, and a fallback should not forget.
+     *
+     * The setting is sharp: 0.98 and 0.995 both measure a point worse than 0.99.
+     */
+    private static final double GUN_DECAY = 0.99;
+
     /** Neighbours consulted, as a multiple of the square root of experience. */
     private static final double K_SCALE = 0.35;
 
@@ -100,6 +114,7 @@ public class Kestrel extends AdvancedRobot {
     // --- Per round -------------------------------------------------------------
 
     private final List<EnemyWave> enemyWaves = new ArrayList<>();
+    private final List<Bullet> myBullets = new ArrayList<>();
     private final List<GunWave> gunWaves = new ArrayList<>();
     private final List<Integer> pastDirections = new ArrayList<>();
     private final List<Double> pastBearings = new ArrayList<>();
@@ -180,6 +195,7 @@ public class Kestrel extends AdvancedRobot {
         }
 
         advanceEnemyWaves();
+        castShadows();
         advanceGunWaves();
         aimAndFire(e, absBearing, enemyLateralSpeed);
         surf();
@@ -267,10 +283,108 @@ public class Kestrel extends AdvancedRobot {
         double total = 0;
         for (int n = 0; n < wave.neighbourCount; n++) {
             int record = wave.neighbours[n];
-            int gap = Math.max(0, Math.abs(recordBin[record] - index) - half);
+            int bin = recordBin[record];
+            // A bullet aimed down an angle one of our own bullets has already crossed
+            // is not in the air any more, so that angle cannot be where this one lands.
+            if (wave.shadowed[bin]) {
+                continue;
+            }
+            int gap = Math.max(0, Math.abs(bin - index) - half);
             total += recordWeight[record] / (gap * gap + 1.0);
         }
         return total;
+    }
+
+    /**
+     * Bullet shadows.
+     *
+     * Our own bullets are obstacles to theirs. When one of our bullets crosses an
+     * incoming wave, any enemy bullet travelling down that exact angle was destroyed in
+     * the collision -- so that slice of the wave is provably harmless, whatever the
+     * statistics say about it. This is the one source of *certain* knowledge a surfer
+     * gets; everything else is inference from past hits.
+     *
+     * Each turn we advance every live bullet one step and mark the angles it sweeps
+     * across the front of each wave. Marks accumulate: a crossing that happened three
+     * turns ago still killed that bullet, so the shadow it left is permanent for the
+     * life of the wave.
+     */
+    private void castShadows() {
+        for (Iterator<Bullet> it = myBullets.iterator(); it.hasNext();) {
+            Bullet bullet = it.next();
+            if (!bullet.isActive()) {
+                it.remove(); // hit something, or left the field: it blocks nothing further
+                continue;
+            }
+            double step = bullet.getVelocity();
+            double heading = bullet.getHeadingRadians();
+            double dx = Math.sin(heading) * step;
+            double dy = Math.cos(heading) * step;
+
+            for (EnemyWave wave : enemyWaves) {
+                shadow(wave, bullet.getX(), bullet.getY(), dx, dy);
+            }
+        }
+    }
+
+    /**
+     * Marks where a bullet stepping from (x,y) by (dx,dy) sits exactly on a wave's
+     * front. The bullet is at the front when its distance from the wave's origin equals
+     * the wave's radius, and both change linearly across the step, so the crossing
+     * points are the roots of a quadratic in how far through the step we are.
+     */
+    private void shadow(EnemyWave wave, double x, double y, double dx, double dy) {
+        double ax = x - wave.fireLocation.x;
+        double ay = y - wave.fireLocation.y;
+        double radius = wave.distanceTraveled;
+        double growth = wave.bulletSpeed;
+
+        double a = dx * dx + dy * dy - growth * growth;
+        double b = 2 * (ax * dx + ay * dy - radius * growth);
+        double c = ax * ax + ay * ay - radius * radius;
+
+        double first, second;
+        if (Math.abs(a) < 1e-9) {
+            if (Math.abs(b) < 1e-9) {
+                return;
+            }
+            first = second = -c / b;
+        } else {
+            double discriminant = b * b - 4 * a * c;
+            if (discriminant < 0) {
+                return; // never touches this wave during this step
+            }
+            double root = Math.sqrt(discriminant);
+            first = (-b - root) / (2 * a);
+            second = (-b + root) / (2 * a);
+        }
+
+        int low = shadowBin(wave, ax, ay, dx, dy, first);
+        int high = shadowBin(wave, ax, ay, dx, dy, second);
+        if (low < 0 || high < 0) {
+            if (low < 0 && high < 0) {
+                return;
+            }
+            // One end of the crossing is off the escape range; shade just the end we have.
+            low = high = Math.max(low, high);
+        }
+        for (int i = Math.min(low, high); i <= Math.max(low, high); i++) {
+            wave.shadowed[i] = true;
+        }
+    }
+
+    /** The angular slot a crossing lands in, or -1 if it is outside the step or the wave. */
+    private static int shadowBin(EnemyWave wave, double ax, double ay, double dx, double dy, double at) {
+        if (at < 0 || at > 1) {
+            return -1;
+        }
+        double angle = Math.atan2(ax + at * dx, ay + at * dy);
+        double offset = Utils.normalRelativeAngle(angle - wave.directAngle);
+        double factor = offset / maxEscapeAngle(wave.bulletSpeed) * wave.direction;
+        if (factor < -1 || factor > 1) {
+            return -1;
+        }
+        return (int) limit(0, factor * MIDDLE + MIDDLE, BINS - 1);
     }
 
     /**
@@ -520,7 +634,10 @@ public class Kestrel extends AdvancedRobot {
         // leaves while we are still tracking and simply misses.
         if (getGunHeat() == 0 && getEnergy() > power + 0.1
                 && Math.abs(gunTurn) < Rules.GUN_TURN_RATE_RADIANS) {
-            setFire(power);
+            Bullet fired = setFireBullet(power);
+            if (fired != null) {
+                myBullets.add(fired);
+            }
         }
     }
 
@@ -539,16 +656,22 @@ public class Kestrel extends AdvancedRobot {
         double factor = limit(-1, offset / wave.maxEscape * wave.direction, 1);
         int index = (int) Math.round(factor * MIDDLE + MIDDLE);
 
-        smear(gunFlat, index);
-        smear(gunByRange[wave.range], index);
-        smear(gunByRangeSpeed[wave.range][wave.speed], index);
-        smear(gunFine[wave.range][wave.speed][wave.accel], index);
-        smear(gunByWall[wave.range][wave.speed][wave.wall], index);
+        smear(gunFlat, index, 1.0);
+        smear(gunByRange[wave.range], index, 1.0);
+        smear(gunByRangeSpeed[wave.range][wave.speed], index, 1.0);
+        smear(gunFine[wave.range][wave.speed][wave.accel], index, GUN_DECAY);
+        smear(gunByWall[wave.range][wave.speed][wave.wall], index, GUN_DECAY);
     }
 
-    private static void smear(double[] bins, int index) {
+    /**
+     * A bot worth beating changes how it moves as we shoot at it. Fading old evidence
+     * means the gun follows that drift instead of averaging over a movement the enemy
+     * abandoned ten rounds ago; the coarse buffers fade slower because they are the
+     * fallback when the fine ones have nothing to say.
+     */
+    private static void smear(double[] bins, int index, double decay) {
         for (int i = 0; i < BINS; i++) {
-            bins[i] += 1.0 / ((i - index) * (i - index) + 1);
+            bins[i] = bins[i] * decay + 1.0 / ((i - index) * (i - index) + 1);
         }
     }
 
@@ -700,6 +823,7 @@ public class Kestrel extends AdvancedRobot {
         int speedIndex;
         int wallIndex;
         double[] features;
+        final boolean[] shadowed = new boolean[BINS];
         int[] neighbours;
         int neighbourCount;
     }
