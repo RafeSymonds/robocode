@@ -1,0 +1,10 @@
+# Downloaded by bin/robocode — not source
+engine/
+samples/
+bots/lib/
+
+# Build + runtime scratch
+var/
+*.class
+
+.DS_Store

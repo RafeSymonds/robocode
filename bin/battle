@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# Run a battle with no GUI and print the scoreboard.
+#
+#   bin/battle RafeBot SpinBot              10 rounds, one on one
+#   bin/battle --rounds 50 RafeBot Walls    more rounds for a steadier result
+#   bin/battle RafeBot Crazy Walls Corners  three or more bots means melee
+#
+# Bot names are looked up in bots/ first, then samples/. Paths work too.
+#
+set -euo pipefail
+
+VERSION=1.1.0
+BASE_URL="https://github.com/robocode-dev/tank-royale/releases/download/v${VERSION}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNNER_JAR="$ROOT/engine/robocode-tankroyale-runner-${VERSION}.jar"
+CLASSES="$ROOT/var/classes"
+
+find_jdk_bin() { # $1 = java | javac
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/$1" ]]; then echo "$JAVA_HOME/bin/$1"; return; fi
+  local candidate
+  for candidate in "/opt/homebrew/opt/openjdk/bin/$1" "/usr/local/opt/openjdk/bin/$1"; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v "$1" >/dev/null 2>&1 && { command -v "$1"; return; }
+  echo "battle: no JDK found. Install one with:  brew install openjdk" >&2
+  exit 1
+}
+JAVA="$(find_jdk_bin java)"
+JAVAC="$(find_jdk_bin javac)"
+
+# The runner starts the server and each bot as its own `java` subprocess, so the
+# JDK has to be on PATH for children too.
+export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+[[ $# -ge 2 ]] || { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
+
+mkdir -p "$ROOT/engine" "$CLASSES"
+if [[ ! -f "$RUNNER_JAR" ]]; then
+  echo "  downloading $(basename "$RUNNER_JAR")"
+  curl -fsSL --retry 3 -o "$RUNNER_JAR.part" "$BASE_URL/robocode-tankroyale-runner-${VERSION}.jar"
+  mv "$RUNNER_JAR.part" "$RUNNER_JAR"
+fi
+
+# Recompile the driver only when it changes.
+if [[ "$ROOT/tools/Battle.java" -nt "$CLASSES/Battle.class" ]]; then
+  "$JAVAC" -cp "$RUNNER_JAR" -d "$CLASSES" "$ROOT/tools/Battle.java"
+fi
+
+# Turn bot names into bot directories.
+argv=()
+for arg in "$@"; do
+  case "$arg" in
+    --rounds|[0-9]*) argv+=("$arg"); continue ;;
+  esac
+  if [[ -d "$arg" ]]; then                       argv+=("$(cd "$arg" && pwd)")
+  elif [[ -d "$ROOT/bots/$arg" ]]; then          argv+=("$ROOT/bots/$arg")
+  elif [[ -d "$ROOT/samples/$arg" ]]; then       argv+=("$ROOT/samples/$arg")
+  else echo "battle: no bot named '$arg' in bots/ or samples/" >&2; exit 1
+  fi
+done
+
+exec "$JAVA" -cp "$RUNNER_JAR:$CLASSES" Battle "${argv[@]}"

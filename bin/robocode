@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+#
+# Robocode Tank Royale lifecycle.
+#
+#   bin/robocode start [--build]   launch the game GUI (--build re-downloads the engine)
+#   bin/robocode stop              shut it down, plus any bots it left running
+#   bin/robocode restart           stop, re-download, start
+#   bin/robocode status            is it running?
+#
+set -euo pipefail
+
+VERSION=1.1.0
+BASE_URL="https://github.com/robocode-dev/tank-royale/releases/download/v${VERSION}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/engine"
+BOTS="$ROOT/bots"
+SAMPLES="$ROOT/samples"
+VAR="$ROOT/var"
+
+PIDFILE="$VAR/gui.pid"
+LOGFILE="$VAR/gui.log"
+GUI_JAR="$ENGINE/robocode-tankroyale-gui-${VERSION}.jar"
+SERVER_JAR="$ENGINE/robocode-tankroyale-server-${VERSION}.jar"
+API_JAR="$BOTS/lib/robocode-tankroyale-bot-api-${VERSION}.jar"
+
+# Where the GUI keeps its settings (macOS).
+CONFIG="$HOME/Library/Application Support/Robocode Tank Royale/gui.properties"
+
+die() { echo "robocode: $*" >&2; exit 1; }
+
+# --- Java ------------------------------------------------------------------
+
+find_java() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then
+    echo "$JAVA_HOME/bin/java"; return
+  fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  if command -v java >/dev/null 2>&1; then command -v java; return; fi
+  die "no Java found. Install one with:  brew install openjdk"
+}
+
+JAVA="$(find_java)"
+
+# The engine boots the server and every bot as its own `java` subprocess, so the
+# JDK has to be on PATH for children too -- Homebrew's openjdk is not by default.
+export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# Java 22+ warns loudly about native access unless it is opted into.
+java_major() {
+  "$JAVA" -version 2>&1 | head -1 | sed -E 's/.*version "([0-9]+).*/\1/'
+}
+JVM_OPTS=()
+if [[ "$(java_major)" -ge 22 ]] 2>/dev/null; then
+  JVM_OPTS+=(--enable-native-access=ALL-UNNAMED)
+fi
+
+# --- Dependencies ----------------------------------------------------------
+
+fetch() { # url dest
+  echo "  downloading $(basename "$2")"
+  curl -fsSL --retry 3 -o "$2.part" "$1"
+  mv "$2.part" "$2"
+}
+
+ensure_deps() { # $1 = 1 to force a re-download
+  local force="${1:-0}"
+  mkdir -p "$ENGINE" "$BOTS/lib" "$SAMPLES" "$VAR"
+
+  if [[ "$force" == 1 ]]; then
+    rm -rf "$ENGINE" "$BOTS/lib" "$SAMPLES"
+    mkdir -p "$ENGINE" "$BOTS/lib" "$SAMPLES"
+  fi
+
+  [[ -f "$GUI_JAR"    ]] || fetch "$BASE_URL/robocode-tankroyale-gui-${VERSION}.jar" "$GUI_JAR"
+  [[ -f "$SERVER_JAR" ]] || fetch "$BASE_URL/robocode-tankroyale-server-${VERSION}.jar" "$SERVER_JAR"
+
+  # The bot API jar has to sit in bots/lib so bots compile against it.
+  if [[ ! -f "$API_JAR" ]]; then
+    local zip="$VAR/sample-bots.zip"
+    fetch "$BASE_URL/sample-bots-Java-${VERSION}.zip" "$zip"
+    rm -rf "$VAR/unzipped"
+    unzip -q "$zip" -d "$VAR/unzipped"
+    cp "$VAR/unzipped/lib/robocode-tankroyale-bot-api-${VERSION}.jar" "$API_JAR"
+    # The rest of the archive becomes a second bot directory full of opponents. It
+    # keeps its own copy of lib/, because every bot compiles against ../lib/*.
+    cp -R "$VAR/unzipped/." "$SAMPLES/"
+    rm -rf "$VAR/unzipped" "$zip"
+  fi
+}
+
+# Point the GUI at this repo's bot directories, without clobbering any others
+# the user has added by hand. Stored as "path,enabled,path,enabled,...".
+register_bot_dirs() {
+  mkdir -p "$(dirname "$CONFIG")"
+  python3 - "$CONFIG" "$BOTS" "$SAMPLES" <<'PY'
+import os, sys
+
+config, *wanted = sys.argv[1:]
+key = "bot-directories"
+
+lines = open(config).read().splitlines() if os.path.exists(config) else []
+current = ""
+kept = []
+for line in lines:
+    if line.startswith(key + "="):
+        current = line[len(key) + 1:]
+    else:
+        kept.append(line)
+
+fields = [f for f in current.split(",") if f]
+pairs = [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
+known = {path for path, _ in pairs}
+pairs += [(path, "true") for path in wanted if path not in known]
+
+kept.append(key + "=" + ",".join(f"{p},{e}" for p, e in pairs))
+with open(config, "w") as f:
+    f.write("\n".join(kept).strip() + "\n")
+PY
+}
+
+# --- Process state ---------------------------------------------------------
+
+gui_pid() {
+  [[ -f "$PIDFILE" ]] || return 1
+  local pid; pid="$(cat "$PIDFILE")"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -p "$pid" -o command= | grep -q tankroyale || return 1
+  echo "$pid"
+}
+
+# Bots are separate JVMs booted by the GUI; they can outlive it.
+bot_pids() {
+  pgrep -f "$BOTS/" 2>/dev/null || true
+  pgrep -f "$SAMPLES/" 2>/dev/null || true
+}
+
+# --- Commands --------------------------------------------------------------
+
+cmd_start() {
+  local build=0 pid
+  [[ "${1:-}" == "--build" ]] && build=1
+
+  if pid="$(gui_pid)"; then
+    echo "robocode: already running (pid $pid)"
+    return 0
+  fi
+
+  ensure_deps "$build"
+  register_bot_dirs
+
+  mkdir -p "$VAR"
+  nohup "$JAVA" "${JVM_OPTS[@]}" -jar "$GUI_JAR" >"$LOGFILE" 2>&1 &
+  echo $! >"$PIDFILE"
+
+  # Give it a moment so a JVM that dies on startup is reported as a failure
+  # rather than a success.
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    gui_pid >/dev/null && { echo "robocode: started (pid $(cat "$PIDFILE")), log: var/gui.log"; return 0; }
+  done
+  echo "robocode: failed to start. Last lines of var/gui.log:" >&2
+  tail -20 "$LOGFILE" >&2
+  return 1
+}
+
+cmd_stop() {
+  local pid stopped=0
+  if pid="$(gui_pid)"; then
+    kill "$pid" 2>/dev/null || true
+    stopped=1
+  fi
+  local bots; bots="$(bot_pids)"
+  if [[ -n "$bots" ]]; then
+    echo "$bots" | xargs kill 2>/dev/null || true
+    stopped=1
+  fi
+  rm -f "$PIDFILE"
+  [[ "$stopped" == 1 ]] && echo "robocode: stopped" || echo "robocode: not running"
+}
+
+cmd_status() {
+  local pid
+  if pid="$(gui_pid)"; then
+    echo "robocode: running (pid $pid), engine ${VERSION}"
+  else
+    echo "robocode: not running"
+  fi
+  local count; count="$(find "$BOTS" -mindepth 2 -maxdepth 2 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "  bots in bots/: $count"
+  local bots; bots="$(bot_pids)"
+  [[ -n "$bots" ]] && echo "  bot processes: $(echo "$bots" | wc -l | tr -d ' ')"
+  return 0
+}
+
+case "${1:-}" in
+  start)   shift; cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; cmd_start --build ;;
+  status)  cmd_status ;;
+  *)       sed -n '3,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

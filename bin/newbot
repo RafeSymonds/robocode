@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# Scaffold a new bot.
+#
+#   bin/newbot Sniper      creates bots/Sniper/{Sniper.java,Sniper.json}
+#
+# Tank Royale requires the directory name, the .java file, the .json file and
+# the public class to all share one name, so this script keeps them in sync.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+NAME="${1:-}"
+[[ -n "$NAME" ]] || { echo "usage: bin/newbot <BotName>" >&2; exit 1; }
+[[ "$NAME" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || { echo "newbot: '$NAME' is not a valid Java class name" >&2; exit 1; }
+
+DIR="$ROOT/bots/$NAME"
+[[ -e "$DIR" ]] && { echo "newbot: bots/$NAME already exists" >&2; exit 1; }
+
+mkdir -p "$DIR"
+
+cat > "$DIR/$NAME.json" <<JSON
+{
+  "name": "$NAME",
+  "version": "0.1",
+  "authors": [
+    "Rafe Symonds"
+  ],
+  "description": "A Robocode Tank Royale bot.",
+  "homepage": "https://github.com/RafeSymonds/robocode",
+  "countryCodes": [
+    "us"
+  ],
+  "platform": "JVM",
+  "programmingLang": "Java 17",
+  "gameTypes": [
+    "classic",
+    "1v1",
+    "melee"
+  ],
+  "license": "MIT"
+}
+JSON
+
+cat > "$DIR/$NAME.java" <<JAVA
+import dev.robocode.tankroyale.botapi.Bot;
+import dev.robocode.tankroyale.botapi.events.HitByBulletEvent;
+import dev.robocode.tankroyale.botapi.events.ScannedBotEvent;
+
+public class $NAME extends Bot {
+
+    public static void main(String[] args) {
+        new $NAME().start();
+    }
+
+    // Called once at the start of every round.
+    @Override
+    public void run() {
+        while (isRunning()) {
+            forward(100);
+            turnGunLeft(360);
+            back(100);
+            turnGunLeft(360);
+        }
+    }
+
+    @Override
+    public void onScannedBot(ScannedBotEvent e) {
+        fire(1);
+    }
+
+    @Override
+    public void onHitByBullet(HitByBulletEvent e) {
+        // Turn perpendicular to the incoming bullet.
+        turnRight(90 - calcBearing(e.getBullet().getDirection()));
+    }
+}
+JAVA
+
+echo "created bots/$NAME"
+echo "  compile check:  bin/check $NAME"

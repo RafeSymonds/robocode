@@ -1,0 +1,20 @@
+{
+  "name": "RafeBot",
+  "version": "0.1",
+  "authors": [
+    "Rafe Symonds"
+  ],
+  "description": "Orbiting tracker: locking radar, linear-predictive gun, wall-aware movement.",
+  "homepage": "https://github.com/RafeSymonds/robocode",
+  "countryCodes": [
+    "us"
+  ],
+  "platform": "JVM",
+  "programmingLang": "Java 17",
+  "gameTypes": [
+    "classic",
+    "1v1",
+    "melee"
+  ],
+  "license": "MIT"
+}

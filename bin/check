@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Compile bots without launching the game, so you catch errors in seconds.
+#
+#   bin/check            compile every bot in bots/
+#   bin/check RafeBot    compile just one
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BOTS="$ROOT/bots"
+
+find_javac() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/javac" ]]; then echo "$JAVA_HOME/bin/javac"; return; fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/javac /usr/local/opt/openjdk/bin/javac; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v javac >/dev/null 2>&1 && { command -v javac; return; }
+  echo "check: no JDK found. Install one with:  brew install openjdk" >&2
+  exit 1
+}
+JAVAC="$(find_javac)"
+
+compile_ls=("$BOTS"/*/)
+if [[ -n "${1:-}" ]]; then compile_ls=("$BOTS/$1/"); fi
+
+status=0
+for dir in "${compile_ls[@]}"; do
+  name="$(basename "$dir")"
+  [[ "$name" == "lib" ]] && continue
+  src="$dir$name.java"
+  [[ -f "$src" ]] || continue
+  if "$JAVAC" -Xlint:all -cp "$BOTS/lib/*" -d "$ROOT/var/classes" "$src"; then
+    echo "ok    $name"
+  else
+    echo "FAIL  $name"
+    status=1
+  fi
+done
+exit $status
