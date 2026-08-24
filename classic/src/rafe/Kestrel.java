@@ -49,9 +49,6 @@ public class Kestrel extends AdvancedRobot {
     /** How much the wave behind the incoming one counts when picking a direction. */
     private static final double SECOND_WAVE_WEIGHT = 0.4;
 
-    /** How much old evidence survives each new hit. 1.0 remembers everything. */
-    private static final double DANGER_DECAY = 0.97;
-
     /** Range we try to hold: close enough to hit, far enough to dodge. */
     private static final double PREFERRED_DISTANCE = 500;
 
@@ -61,9 +58,6 @@ public class Kestrel extends AdvancedRobot {
     private static final int WALL_SEGMENTS = 3;
 
     // --- Learned across rounds -------------------------------------------------
-
-    /** Where enemy bullets have actually hit us, by [range][our speed][angle]. */
-    private static final double[][][][] dangerStats = new double[3][3][3][BINS];
 
     /**
      * Every hit we have taken, as a point in feature space rather than a bucket.
@@ -194,9 +188,6 @@ public class Kestrel extends AdvancedRobot {
             wave.direction = pastDirections.get(2);
             wave.directAngle = pastBearings.get(2);
             wave.fireLocation = (Point2D.Double) enemyLocation.clone();
-            wave.rangeIndex = moveRangeSegment(wave.fireLocation.distance(myLocation));
-            wave.speedIndex = moveSpeedSegment(myLateralSpeed);
-            wave.wallIndex = myWallSegment(wave.fireLocation, lastDirection);
             wave.features = new double[] {
                 limit(0, (wave.fireLocation.distance(myLocation) / wave.bulletSpeed) / 60, 1),
                 Math.abs(myLateralSpeed) / 8,
@@ -596,14 +587,6 @@ public class Kestrel extends AdvancedRobot {
             recordCursor = (recordCursor + 1) % MAX_RECORDS;
             recordCount = Math.min(recordCount + 1, MAX_RECORDS);
         }
-
-        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
-        for (int i = 0; i < BINS; i++) {
-            // Smear it: a bullet that hit here would very nearly have hit next door too,
-            // and fade what came before, because a strong opponent keeps changing its gun
-            // and danger learned in round three can describe a bot that no longer exists.
-            bins[i] = bins[i] * DANGER_DECAY + weight / ((i - index) * (i - index) + 1);
-        }
     }
 
     private static int factorIndex(EnemyWave wave, Point2D.Double at) {
@@ -866,29 +849,6 @@ public class Kestrel extends AdvancedRobot {
         return delta < -0.1 ? 0 : 1;
     }
 
-    private static int moveRangeSegment(double distance) {
-        return (int) limit(0, distance / 300, 2);
-    }
-
-    private static int moveSpeedSegment(double lateralSpeed) {
-        return (int) limit(0, Math.abs(lateralSpeed) / 3, 2);
-    }
-
-    /**
-     * How far we can keep orbiting this wave's source before a wall stops us. Being
-     * boxed in changes which angles the enemy can catch us at, so danger learned with
-     * open field behind us does not transfer to a corner.
-     */
-    private int myWallSegment(Point2D.Double source, int direction) {
-        double distance = myLocation.distance(source);
-        double bearing = absoluteBearing(source, myLocation);
-        double angle = 0;
-        while (angle < Math.PI / 2
-                && field.contains(project(source, bearing + direction * angle, distance))) {
-            angle += 0.1;
-        }
-        return (int) limit(0, angle / (Math.PI / 2) * 3, 2);
-    }
 
     // =========================================================================
     // Geometry
@@ -951,9 +911,6 @@ public class Kestrel extends AdvancedRobot {
         double directAngle;
         double distanceTraveled;
         int direction;
-        int rangeIndex;
-        int speedIndex;
-        int wallIndex;
         double[] features;
         final boolean[] shadowed = new boolean[BINS];
         int[] neighbours;
