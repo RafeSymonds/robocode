@@ -63,6 +63,28 @@ public class Kestrel extends AdvancedRobot {
     /** Where enemy bullets have actually hit us, by [range][our speed][angle]. */
     private static final double[][][][] dangerStats = new double[3][3][3][BINS];
 
+    /**
+     * Every hit we have taken, as a point in feature space rather than a bucket.
+     *
+     * Fixed segments were the ceiling on this bot: 27 of them, fed only by hits, left
+     * each one starved, and a starved table makes finer movement choices actively worse
+     * because the bot chases noise. Storing the raw observations and asking "which of
+     * these situations most resembles the one I am in now" spends the same evidence
+     * without ever splitting it, and degrades gracefully instead of falling off a cliff
+     * when a segment is empty.
+     */
+    private static final int MAX_RECORDS = 2000;
+    private static final double[][] recordFeatures = new double[MAX_RECORDS][];
+    private static final int[] recordBin = new int[MAX_RECORDS];
+    private static final double[] recordWeight = new double[MAX_RECORDS];
+    private static int recordCount;
+    private static int recordCursor;
+
+    /** Relative importance of each feature when judging similarity. */
+    private static final double[] FEATURE_WEIGHTS = {2.0, 1.0, 1.0, 1.5, 1.5, 1.0};
+
+    private int ticksSinceReversal;
+
     /** Where the enemy has been when our waves arrived, coarse to fine. */
     private static final double[] gunFlat = new double[BINS];
     private static final double[][] gunByRange = new double[DIST_SEGMENTS][BINS];
@@ -134,6 +156,14 @@ public class Kestrel extends AdvancedRobot {
             wave.rangeIndex = moveRangeSegment(wave.fireLocation.distance(myLocation));
             wave.speedIndex = moveSpeedSegment(myLateralSpeed);
             wave.wallIndex = myWallSegment(wave.fireLocation, lastDirection);
+            wave.features = new double[] {
+                limit(0, (wave.fireLocation.distance(myLocation) / wave.bulletSpeed) / 60, 1),
+                Math.abs(myLateralSpeed) / 8,
+                (getVelocity() * Math.cos(e.getBearingRadians()) + 8) / 16,
+                myWallRoom(wave.fireLocation, lastDirection),
+                myWallRoom(wave.fireLocation, -lastDirection),
+                limit(0, ticksSinceReversal / 40.0, 1),
+            };
             enemyWaves.add(wave);
         }
         enemyEnergy = e.getEnergy();
@@ -180,6 +210,7 @@ public class Kestrel extends AdvancedRobot {
             }
             source = wave.fireLocation;
             direction = left < right ? -1 : 1;
+            ticksSinceReversal = direction == lastDirection ? ticksSinceReversal + 1 : 0;
             lastDirection = direction;
         }
 
@@ -226,12 +257,79 @@ public class Kestrel extends AdvancedRobot {
         double range = Math.max(predicted.distance(wave.fireLocation), 1);
         int half = (int) Math.ceil(Math.atan(18 / range) / maxEscapeAngle(wave.bulletSpeed) * MIDDLE);
 
-        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
+        if (wave.neighbours == null) {
+            findNeighbours(wave);
+        }
+
         double total = 0;
-        for (int i = index - half; i <= index + half; i++) {
-            total += bins[(int) limit(0, i, BINS - 1)];
+        for (int n = 0; n < wave.neighbourCount; n++) {
+            int record = wave.neighbours[n];
+            int gap = Math.max(0, Math.abs(recordBin[record] - index) - half);
+            total += recordWeight[record] / (gap * gap + 1.0);
         }
         return total;
+    }
+
+    /**
+     * The k most similar past hits, k growing as the square root of experience: enough
+     * neighbours to be stable, few enough to stay specific. Computed once per wave and
+     * cached, because the wave's features are fixed the moment it is fired -- otherwise
+     * this would run several times a tick and risk a skipped turn.
+     */
+    private void findNeighbours(EnemyWave wave) {
+        int k = (int) limit(1, Math.round(Math.sqrt(recordCount)), 48);
+        wave.neighbours = new int[k];
+        wave.neighbourCount = 0;
+
+        double worst = Double.POSITIVE_INFINITY;
+        int worstSlot = 0;
+        double[] distances = new double[k];
+
+        for (int record = 0; record < recordCount; record++) {
+            double distance = 0;
+            double[] features = recordFeatures[record];
+            for (int f = 0; f < FEATURE_WEIGHTS.length; f++) {
+                double delta = (features[f] - wave.features[f]) * FEATURE_WEIGHTS[f];
+                distance += delta * delta;
+            }
+
+            if (wave.neighbourCount < k) {
+                wave.neighbours[wave.neighbourCount] = record;
+                distances[wave.neighbourCount] = distance;
+                wave.neighbourCount++;
+                if (wave.neighbourCount == k) {
+                    worst = -1;
+                    for (int n = 0; n < k; n++) {
+                        if (distances[n] > worst) {
+                            worst = distances[n];
+                            worstSlot = n;
+                        }
+                    }
+                }
+            } else if (distance < worst) {
+                wave.neighbours[worstSlot] = record;
+                distances[worstSlot] = distance;
+                worst = -1;
+                for (int n = 0; n < k; n++) {
+                    if (distances[n] > worst) {
+                        worst = distances[n];
+                        worstSlot = n;
+                    }
+                }
+            }
+        }
+    }
+
+    /** Room to keep orbiting in a direction, as a share of a quarter circle. */
+    private double myWallRoom(Point2D.Double source, int direction) {
+        double distance = myLocation.distance(source);
+        double bearing = absoluteBearing(source, myLocation);
+        double angle = 0;
+        while (angle < Math.PI / 2
+                && field.contains(project(source, bearing + direction * angle, distance))) {
+            angle += 0.05;
+        }
+        return angle / (Math.PI / 2);
     }
 
     /**
@@ -360,6 +458,14 @@ public class Kestrel extends AdvancedRobot {
 
     private void logHit(EnemyWave wave, Point2D.Double at, double weight) {
         int index = factorIndex(wave, at);
+        if (wave.features != null) {
+            recordFeatures[recordCursor] = wave.features;
+            recordBin[recordCursor] = index;
+            recordWeight[recordCursor] = weight;
+            recordCursor = (recordCursor + 1) % MAX_RECORDS;
+            recordCount = Math.min(recordCount + 1, MAX_RECORDS);
+        }
+
         double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
         for (int i = 0; i < BINS; i++) {
             // Smear it: a bullet that hit here would very nearly have hit next door too,
@@ -590,6 +696,9 @@ public class Kestrel extends AdvancedRobot {
         int rangeIndex;
         int speedIndex;
         int wallIndex;
+        double[] features;
+        int[] neighbours;
+        int neighbourCount;
     }
 
     private static final class GunWave {
