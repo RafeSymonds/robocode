@@ -80,6 +80,9 @@ public class Kestrel extends AdvancedRobot {
     private static int recordCount;
     private static int recordCursor;
 
+    /** Neighbours consulted, as a multiple of the square root of experience. */
+    private static final double K_SCALE = 0.35;
+
     /** Relative importance of each feature when judging similarity. */
     private static final double[] FEATURE_WEIGHTS = {2.0, 1.0, 1.0, 1.5, 1.5, 1.0};
 
@@ -277,7 +280,7 @@ public class Kestrel extends AdvancedRobot {
      * this would run several times a tick and risk a skipped turn.
      */
     private void findNeighbours(EnemyWave wave) {
-        int k = (int) limit(1, Math.round(Math.sqrt(recordCount)), 48);
+        int k = (int) limit(1, Math.round(K_SCALE * Math.sqrt(recordCount)), 64);
         wave.neighbours = new int[k];
         wave.neighbourCount = 0;
 
