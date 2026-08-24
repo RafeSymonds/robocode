@@ -1,98 +1,104 @@
 # robocode
 
-My bots for [Robocode Tank Royale](https://robocode.dev) — the game where you write a tank's
-brain in Java and watch it fight other people's tanks. You never drive the tank yourself; you
-write the code that decides how it moves, aims, and shoots, then let the battle run.
+Two Robocode engines, because they are two different games:
 
-Engine version: **1.1.0**
+- **`classic/`** — [classic Robocode](https://robocode.sourceforge.io/). Old engine, but it is
+  where the live [RoboRumble leaderboard](https://rumble.robowiki.net/RumbleStats) runs, with
+  1,215 bots and rankings that update hourly. This is where `Kestrel` competes.
+- **`bots/`** — [Robocode Tank Royale](https://robocode.dev). The modern successor: better
+  engine, cleaner API, no live leaderboard yet (its rumble is still being built).
 
 ## Quick start
 
 ```sh
-bin/robocode start
+bin/classic start          # classic Robocode GUI
+bin/bench Kestrel          # score Kestrel against the opponent ladder, in parallel
+
+bin/robocode start         # Tank Royale GUI
+bin/battle RafeBot SpinBot # headless Tank Royale battle
 ```
 
-That downloads the game engine on first run, points it at this repo's bots, and opens the GUI.
-Then, in the window: **Battle → Start Battle**, pick `RafeBot` plus a few sample bots as
-opponents, and hit **Start Battle**.
+## Kestrel
 
-To iterate on a bot, skip the GUI and let the battle run at full speed with no rendering:
+`classic/src/rafe/Kestrel.java` — a 1v1 duelist. Two ideas do nearly all the work, both built
+on **waves**: a bullet's flight time lets you reason about a shot long after it was fired.
 
-```sh
-bin/battle --rounds 50 RafeBot SpinBot
-```
+**Movement — wave surfing.** You cannot see enemy bullets, but when the enemy's energy drops
+they have fired. Kestrel records an expanding circle from where they fired; when one finally
+hits, it remembers the angle it was caught at. Thereafter it simulates its own tank going both
+ways around each incoming wave and drives toward whichever predicted landing spot it has been
+hit at least often. Getting shot is the training signal.
 
-```
-rank bot                       score survival   damage    1sts
---------------------------------------------------------------
-1    RafeBot                    1367      350      758       7
-2    Spin Bot                    456      150      237       3
-```
+**Targeting — guess factors.** Kestrel fires its own waves every tick, loaded or not, and when
+one reaches the enemy it records where they were as a fraction of how far they could possibly
+have moved. It aims at the fraction they pick most often. Five statistics buffers run from
+unsegmented to range/speed/wall/acceleration, normalised and blended, so the gun is usable in
+round one and sharp by round ten.
+
+All learning is `static`, because Robocode rebuilds the robot object every round.
+
+### Measured strength
+
+Against real RoboRumble bots, 400 rounds each:
+
+| Opponent | Score% | | Opponent | Score% |
+| --- | --- | --- | --- | --- |
+| dft.Freddie | 87.96 | | gh.GrubbmGrb | 73.19 |
+| kawigi.mini.Fhqwhgads | 77.89 | | jam.micro.RaikoMicro | 71.95 |
+| davidalves.net.DuelistMicro | 76.28 | | mld.Moebius | 70.47 |
+| cx.mini.Nimrod | 68.20 | | sheldor.nano.Sabreur | 67.42 |
+| pe.SandboxDT | 50.82 | | abc.Shadow | 25.57 |
+
+**66.98 average.** At RoboRumble's own 35 rounds, where the learning has less time to compound,
+it averages about **63.7**. Note this ladder is deliberately top-heavy — SandboxDT and Shadow are
+all-time top-tier bots — so it is a harsher field than the rumble as a whole.
 
 ## The scripts
 
 | Command | What it does |
 | --- | --- |
-| `bin/robocode start` | Launch the game GUI (downloads the engine if missing) |
-| `bin/robocode start --build` | Re-download the engine first |
-| `bin/robocode stop` | Shut down the game and any bots it left running |
-| `bin/robocode restart` | Stop, re-download, start |
-| `bin/robocode status` | Is it running? |
-| `bin/battle A B [...]` | Run a battle headless and print the scoreboard |
-| `bin/battle --rounds 50 A B` | More rounds, for a result that isn't luck |
-| `bin/check` | Compile every bot — catches errors in seconds, no GUI needed |
-| `bin/check RafeBot` | Compile one bot |
-| `bin/newbot Sniper` | Scaffold `bots/Sniper/` |
+| `bin/classic start\|stop\|restart\|status` | Classic Robocode GUI |
+| `bin/bench Kestrel [--rounds N] [--tier T]` | Score against the whole ladder, in parallel |
+| `bin/duel Kestrel <opponent...>` | Individual matchups, sequentially |
+| `bin/build` | Compile the classic bots |
+| `bin/opponents` | Download the benchmark ladder |
+| `bin/package [Bot]` | Build the uploadable jar into `dist/` |
+| `bin/robocode start\|stop\|restart\|status` | Tank Royale GUI |
+| `bin/battle A B [--rounds N]` | Headless Tank Royale battle |
+| `bin/check [Bot]` | Compile the Tank Royale bots |
+| `bin/newbot Name` | Scaffold a Tank Royale bot |
 
-`bin/battle` takes two bots for a duel and three or more for a melee. Names are looked up in
-`bots/` first, then `samples/`, so `bin/battle RafeBot Walls` just works.
+**Measure every change with `bin/bench`.** A full ladder at 35 rounds takes about seven seconds,
+because matchups run concurrently in isolated robot directories. Use 250+ rounds when comparing
+two versions: the noise floor at 150 rounds is ±1.3, and single matchups swing 10 points between
+identical runs at 35.
+
+## Entering RoboRumble
+
+1. `bin/package Kestrel` → `dist/rafe.Kestrel_1.0.jar`
+2. Upload it somewhere with a **direct** download link (a GitHub release on this repo works).
+3. Add one line to [RoboRumble/Participants](https://robowiki.net/wiki/RoboRumble/Participants),
+   in alphabetical position, no space after the comma:
+
+   ```
+   rafe.Kestrel 1.0,https://github.com/RafeSymonds/robocode/releases/download/v1.0/rafe.Kestrel_1.0.jar
+   ```
+
+Other people's rumble clients pick it up within hours. A new version replaces the old line — do
+not add a second. The `rafe.` prefix is only a namespace: RoboRumble requires *a* package name so
+1,215 bots don't collide, and by convention people use their handle. It can be anything.
 
 ## Layout
 
 ```
-bots/           my bots — one directory per bot (this is the part that gets committed)
-  RafeBot/
-    RafeBot.java
-    RafeBot.json    name, author, description; the GUI reads this
-  lib/          bot API jar (downloaded)
-tools/          Battle.java, the headless battle driver behind bin/battle
-samples/        the official sample bots, to fight against (downloaded)
-engine/         game GUI, server, and runner jars (downloaded)
-var/            logs, pidfile, compiled classes
+classic/src/rafe/       classic bots (committed)
+classic/engine/         classic Robocode 1.11.1 (downloaded)
+bots/                   Tank Royale bots (committed)
+engine/ samples/        Tank Royale engine and sample bots (downloaded)
+tools/                  battle driver and results parser
+dist/                   packaged upload jars
+var/                    logs, benchmark workspaces, compiled classes
 ```
 
-Tank Royale finds a bot by matching names: the directory, the `.java` file, the `.json` file,
-and the `public class` all have to be spelled identically. `bin/newbot` handles that for you.
-
-## RafeBot
-
-The starter bot, in `bots/RafeBot/RafeBot.java`. It is deliberately more than a toy — it does
-the three things every competitive bot does, each in its own method so you can tune them one at
-a time:
-
-- **Radar** (`keepRadarOn`) — holds a lock on one target by sweeping slightly past it each turn,
-  instead of spinning blindly and rediscovering enemies.
-- **Gun** (`aimAndFire`) — leads the target, predicting where it will be when the bullet lands.
-  Firepower scales down with distance so it doesn't waste energy on long shots.
-- **Body** (`orbit`) — circles the target rather than charging it, reverses whenever it gets hit,
-  and steers away from walls.
-
-Where to go next, roughly in order of payoff. Change one thing, then run `bin/battle` to find
-out whether it actually helped:
-
-1. **Dodge better.** Reversing on every hit is predictable. Try reversing at random intervals.
-2. **Aim better.** Linear prediction misses bots that circle. Look up *circular targeting*, then
-   *guess factor targeting*.
-3. **Pick targets better.** In melee it locks the closest bot; lowest-energy is often better,
-   since finishing a weak bot removes a shooter from the field.
-4. **Spend energy better.** Firing costs energy and hitting earns it back. Fire less when you are
-   behind on energy, more when you are ahead.
-
-## Notes
-
-- Angles are in degrees, counter-clockwise, with 0 pointing east. **Positive bearings mean left.**
-- Two ways to write a bot: blocking calls (`forward(100)`, `turnGunLeft(90)`), or `setXxx()` calls
-  followed by `go()` to commit the turn. Don't mix the two in one bot — `RafeBot` uses `set` + `go`.
-- A bot that takes too long on a turn gets skipped, not warned. Keep per-turn work cheap.
-- Java comes from Homebrew's `openjdk`, which isn't on `PATH`. The scripts find it themselves.
-- Docs: <https://robocode.dev> · API: <https://robocode.dev/api/java/>
+Engine quirks that cost real debugging time are written up in `CLAUDE.md` — read it before
+touching the build, especially the roster-wildcard and jar-scanner notes.
