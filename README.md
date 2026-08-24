@@ -39,39 +39,49 @@ All learning is `static`, because Robocode rebuilds the robot object every round
 
 ### Measured strength
 
-Against real RoboRumble bots, 250 rounds each:
+Against 18 real RoboRumble bots spanning nano to all-time top ten, 250 rounds each:
 
 | Opponent | Score% | | Opponent | Score% |
 | --- | --- | --- | --- | --- |
-| dft.Freddie | 89.80 | | cx.mini.Nimrod | 71.47 |
-| gh.GrubbmGrb | 80.25 | | mld.Moebius | 70.17 |
-| davidalves.net.DuelistMicro | 80.02 | | jam.micro.RaikoMicro | 68.61 |
-| kawigi.mini.Fhqwhgads | 77.18 | | sheldor.nano.Sabreur | 68.59 |
-| **pe.SandboxDT** | **55.82** | | abc.Shadow | 25.56 |
+| stelo.MirrorNano | 91.58 | | nat.nano.Ocnirp | 72.29 |
+| dft.Freddie | 87.76 | | cx.mini.Nimrod | 71.60 |
+| emp.Yngwie | 82.37 | | mld.Moebius | 70.16 |
+| davidalves.net.DuelistMicro | 78.56 | | rz.GlowBlow | 69.96 |
+| kawigi.mini.Fhqwhgads | 76.53 | | sheldor.nano.Sabreur | 67.69 |
+| gh.GrubbmGrb | 74.29 | | simonton.micro.WeeklongObsession | 62.26 |
+| jam.micro.RaikoMicro | 73.78 | | pe.SandboxDT | 50.41 |
+| kawigi.sbf.FloodMini | 72.38 | | abc.Shadow | 31.93 |
+| | | | kc.serpent.Hydra | 28.73 |
+| | | | voidious.Dookious | 24.40 |
 
-**68.75 average**, beating 9 of 10 — including SandboxDT, an all-time top-tier bot that was
-winning 56–44 against the first working version. Shadow remains out of reach.
-
-Note this ladder is deliberately top-heavy, so it is a harsher field than the rumble as a whole.
+**65.93 average, winning 15 of 18.** The three losses are Dookious, Hydra and Shadow — all
+former or current top-ten bots. This ladder is far harsher than the rumble as a whole.
 
 ### What actually made it stronger
 
-Every change below was A/B tested at 250+ rounds against the full ladder. The noise floor is
-±1.3, so anything smaller than that is not a result:
+Every change was A/B tested at 250+ rounds. The noise floor is ±1.3, so anything smaller is
+not a result:
 
 | Change | Effect |
 | --- | --- |
+| KNN danger model replacing fixed segments | **Shadow 25.6 → ~32** |
 | Wall segmentation on the gun | **+2.8** |
 | Danger weighted by bullet damage, plus decay | **+2.4** |
-| Second-wave surfing, movement wall segmentation, bot-width danger | +0.5 each, inside noise |
-| Adaptive flattener | **−2.9** — reverted |
-| Multi-option surfing (5 candidate moves) | −1.1 — reverted |
-| Orbit distance, bullet power, bin count sweeps | already optimal |
+| Fixing a hang that forfeited whole battles | a lost battle is worth 0% |
+| Neighbour count tuned to 0.35·√n | +1.2 vs Shadow, neutral elsewhere |
+| Second-wave surfing, bot-width danger, movement wall segments | +0.5 each, inside noise |
+| Flatteners (three designs) | **−0.8 to −2.9** — all reverted |
+| Multi-option surfing (5 candidate moves) | −1.2, tested on both danger models |
+| Accuracy-adaptive firepower | **−8** — the energy analysis behind it was wrong |
+| KNN applied to the gun as well | neutral; the gun's blended buffers already coped |
+| Orbit distance, bullet power, bin count, feature weights | already optimal |
 
-The diagnosis that mattered: against Shadow our bullet damage was close (1033 vs 1495) but our
-survival was 300 vs 1450. The gun was never the problem — the movement was. A control run with
-the danger statistics disabled scores 9.64 against the top tier versus 37.25 with them, so the
-surfing is doing real work; it just is not yet Shadow's equal.
+The diagnosis that unlocked it: against Shadow our bullet damage was close (1033 vs 1495) but
+survival was 300 vs 1450. The gun was never the problem. A control run with danger statistics
+disabled scores 9.64 against the top tier versus 37.25 with them, so surfing was working — it
+was the *segmentation* that capped it. Twenty-seven buckets fed only by hits leave each one
+starved, and a starved table makes finer decisions actively worse, which is why a run of
+plausible movement upgrades all failed until the buckets themselves went away.
 
 ## The scripts
 

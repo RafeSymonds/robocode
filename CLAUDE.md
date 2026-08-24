@@ -100,3 +100,21 @@ on classic Robocode, not Tank Royale. Engine 1.11.1, pinned in `bin/classic` (`V
 - `onScannedRobot` gives bearing and distance, not coordinates. Project to get a point.
 - A robot instance is **recreated every round**. Anything that must learn across a battle has
   to be `static`.
+
+## Kestrel: things learned the hard way
+
+- **Watch for `is not stopping` in battle logs.** A robot that is still computing when a round
+  ends cannot be interrupted, and the engine forfeits the battle. It was caused by compounding
+  loop bounds, not one runaway loop: a 500-tick prediction whose every tick ran a 200-step wall
+  smoothing loop. Keep `predictPosition` and `wallSmoothing` cheap, and re-check them after any
+  change to the movement.
+- **`bin/bench` reports FAILED for a matchup that produced no results file.** Read the log
+  before assuming it is a harness problem; the first time it happened it was our bug.
+- **Measure before believing anything.** The noise floor is ±1.3 at 250 rounds and much worse at
+  35. Several confidently-reasoned improvements measured negative, including three flatteners
+  and an accuracy-adaptive firepower scheme whose underlying energy analysis was simply wrong
+  (the break-even hit rate is 1/7, not 1/3, because damage dealt is worth energy too).
+- **Fixed segmentation was the ceiling.** Splitting sparse evidence across buckets is what made
+  every finer movement decision fail. KNN over continuous features fixed that. If a change that
+  should obviously help measures as noise, suspect the model is data-starved rather than the
+  idea being wrong.
