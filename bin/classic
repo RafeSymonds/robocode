@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# Classic Robocode lifecycle (the engine with the live RoboRumble leaderboard).
+#
+#   bin/classic start [--build]   launch the classic Robocode GUI
+#   bin/classic stop              shut it down
+#   bin/classic restart           stop, re-download, start
+#   bin/classic status            is it running?
+#
+set -euo pipefail
+
+VERSION=1.11.1
+SETUP_URL="https://github.com/robo-code/robocode/releases/download/v${VERSION}/robocode-${VERSION}-setup.jar"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/classic/engine"
+VAR="$ROOT/var"
+PIDFILE="$VAR/classic.pid"
+LOGFILE="$VAR/classic.log"
+
+die() { echo "classic: $*" >&2; exit 1; }
+
+find_java() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then echo "$JAVA_HOME/bin/java"; return; fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v java >/dev/null 2>&1 && { command -v java; return; }
+  die "no Java found. Install one with:  brew install openjdk"
+}
+JAVA="$(find_java)"
+export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+ensure_engine() { # $1 = 1 to force
+  [[ "${1:-0}" == 1 ]] && rm -rf "$ENGINE"
+  [[ -f "$ENGINE/libs/robocode.jar" ]] && return 0
+  mkdir -p "$ENGINE" "$VAR"
+  echo "  downloading robocode-${VERSION}-setup.jar"
+  curl -fsSL --retry 3 -o "$VAR/robocode-setup.jar" "$SETUP_URL"
+  # The setup jar is just an archive of the install tree; the installer only unpacks
+  # it and writes launchers, so unzip it directly and skip the Swing wizard.
+  unzip -q -o "$VAR/robocode-setup.jar" -d "$ENGINE" -x 'javadoc/*' 'net/*' 'META-INF/*'
+  rm -f "$VAR/robocode-setup.jar"
+}
+
+gui_pid() {
+  [[ -f "$PIDFILE" ]] || return 1
+  local pid; pid="$(cat "$PIDFILE")"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -p "$pid" -o command= | grep -q robocode.Robocode || return 1
+  echo "$pid"
+}
+
+cmd_start() {
+  local build=0 pid
+  [[ "${1:-}" == "--build" ]] && build=1
+  if pid="$(gui_pid)"; then echo "classic: already running (pid $pid)"; return 0; fi
+
+  ensure_engine "$build"
+  "$ROOT/bin/build" >/dev/null
+
+  mkdir -p "$VAR"
+  ( cd "$ENGINE" && nohup "$JAVA" -Xmx512M -Dsun.io.useCanonCaches=false \
+      -cp libs/robocode.jar robocode.Robocode >"$LOGFILE" 2>&1 & echo $! >"$PIDFILE" )
+
+  local i
+  for i in $(seq 1 10); do
+    sleep 0.5
+    gui_pid >/dev/null && { echo "classic: started (pid $(cat "$PIDFILE")), log: var/classic.log"; return 0; }
+  done
+  echo "classic: failed to start. Last lines of var/classic.log:" >&2
+  tail -20 "$LOGFILE" >&2
+  return 1
+}
+
+cmd_stop() {
+  local pid
+  if pid="$(gui_pid)"; then kill "$pid" 2>/dev/null || true; rm -f "$PIDFILE"; echo "classic: stopped"
+  else rm -f "$PIDFILE"; echo "classic: not running"; fi
+}
+
+cmd_status() {
+  local pid
+  if pid="$(gui_pid)"; then echo "classic: running (pid $pid), engine ${VERSION}"
+  else echo "classic: not running"; fi
+  local bots; bots="$(ls "$ROOT/classic/src/rafe"/*.java 2>/dev/null | wc -l | tr -d ' ')"
+  echo "  bots in classic/src/rafe: $bots"
+  return 0
+}
+
+case "${1:-}" in
+  start)   shift; cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; cmd_start --build ;;
+  status)  cmd_status ;;
+  *)       sed -n '3,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

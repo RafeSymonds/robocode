@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# Compile the classic bots into the engine's robots/ directory.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/classic/engine"
+SRC="$ROOT/classic/src"
+
+find_javac() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/javac" ]]; then echo "$JAVA_HOME/bin/javac"; return; fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/javac /usr/local/opt/openjdk/bin/javac; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v javac >/dev/null 2>&1 && { command -v javac; return; }
+  echo "build: no JDK found. Install one with:  brew install openjdk" >&2; exit 1
+}
+JAVAC="$(find_javac)"
+JAVA="$(dirname "$JAVAC")/java"
+
+[[ -f "$ENGINE/libs/robocode.jar" ]] || { echo "build: engine missing, run bin/classic start" >&2; exit 1; }
+
+# RoboRumble requires Java 17 bytecode or lower.
+REFRESH_INDEX=0
+for src in "$SRC"/rafe/*.java; do
+  [[ "$src" -nt "$ENGINE/robots/rafe/$(basename "$src" .java).class" ]] && REFRESH_INDEX=1
+done
+
+"$JAVAC" -Xlint:all --release 17 -cp "$ENGINE/libs/robocode.jar" -d "$ENGINE/robots" "$SRC"/rafe/*.java
+
+# Every robot needs a .properties descriptor beside its class -- the engine indexes
+# from it, and RoboRumble rejects a jar without one.
+VERSION_FILE="$ROOT/classic/version.txt"
+BOT_VERSION="$(cat "$VERSION_FILE" 2>/dev/null || echo 1.0)"
+for src in "$SRC"/rafe/*.java; do
+  name="$(basename "$src" .java)"
+  cat > "$ENGINE/robots/rafe/$name.properties" <<EOF
+#Robot Properties
+robot.description=$(sed -n 's/^ \* \(.*\) - \(.*\)$/\2/p' "$src" | head -1)
+robot.webpage=https://github.com/RafeSymonds/robocode
+robocode.version=1.11.1
+robot.java.source.included=false
+robot.author.name=Rafe Symonds
+robot.classname=rafe.$name
+robot.name=$name
+robot.version=$BOT_VERSION
+EOF
+done
+
+# The engine resolves a battle's roster before it rescans robots/, so a bot compiled
+# just now would not be found until the run after next. One throwaway battle forces
+# the index to refresh, which costs a couple of seconds and saves a confusing miss.
+if [[ "$REFRESH_INDEX" == 1 ]]; then
+  cat > "$ROOT/var/index-refresh.battle" <<EOF
+robocode.battleField.width=400
+robocode.battleField.height=400
+robocode.battle.numRounds=1
+robocode.battle.rules.inactivityTime=30
+robocode.battle.selectedRobots=sample.Fire,sample.SittingDuck
+EOF
+  ( cd "$ENGINE" && "$JAVA" -Xmx512M -cp libs/robocode.jar robocode.Robocode \
+      -battle "$ROOT/var/index-refresh.battle" -nodisplay -nosound ) >/dev/null 2>&1 || true
+fi
+echo "build: ok"

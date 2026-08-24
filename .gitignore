@@ -3,7 +3,11 @@ engine/
 samples/
 bots/lib/
 
-# Build + runtime scratch
+# Downloaded by bin/classic and bin/opponents — not source
+classic/engine/
+
+# Build output
+dist/
 var/
 *.class
 

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# Run headless 1v1 battles and print the score percentage -- the same measure
+# RoboRumble ranks on (APS). This is how you find out whether a change helped.
+#
+#   bin/duel Kestrel sample.Walls
+#   bin/duel Kestrel sample.Walls sample.Crazy      one duel each, plus an average
+#   bin/duel --rounds 35 Kestrel sample.Walls
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/classic/engine"
+VAR="$ROOT/var"
+
+find_java() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then echo "$JAVA_HOME/bin/java"; return; fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v java >/dev/null 2>&1 && { command -v java; return; }
+  echo "duel: no JDK found. Install one with:  brew install openjdk" >&2; exit 1
+}
+JAVA="$(find_java)"
+export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+ROUNDS=35
+args=()
+skip=0
+for arg in "$@"; do
+  if [[ "$skip" == 1 ]]; then ROUNDS="$arg"; skip=0; continue; fi
+  if [[ "$arg" == "--rounds" ]]; then skip=1; continue; fi
+  args+=("$arg")
+done
+[[ ${#args[@]} -ge 2 ]] || { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
+
+[[ -f "$ENGINE/libs/robocode.jar" ]] || { echo "duel: engine missing, run bin/classic start" >&2; exit 1; }
+"$ROOT/bin/build" >/dev/null
+
+# A bare name means one of ours; anything with a dot is already fully qualified.
+# Our bots carry a version, and a versioned robot only matches a roster entry that
+# names the version too -- the trailing "*" sidesteps that.
+qualify() {
+  local name="$1"
+  case "$name" in *.*) ;; *) name="rafe.$name" ;; esac
+  # Nearly every real bot carries a version, and a versioned robot only matches a
+  # roster entry that spells the version out too. The wildcard sidesteps that.
+  case "$name" in *\*) echo "$name" ;; *) echo "$name*" ;; esac
+}
+
+MINE="$(qualify "${args[0]}")"
+mkdir -p "$VAR/duels"
+
+printf '%-32s %8s %10s %12s\n' "opponent" "score%" "my score" "their score"
+printf -- '-%.0s' {1..66}; printf '\n'
+
+total=0
+count=0
+for ((i = 1; i < ${#args[@]}; i++)); do
+  opponent="$(qualify "${args[i]}")"
+  battle="$VAR/duels/duel.battle"
+  results="$VAR/duels/duel.results"
+  rm -f "$results"
+
+  cat > "$battle" <<EOF
+robocode.battleField.width=800
+robocode.battleField.height=600
+robocode.battle.numRounds=$ROUNDS
+robocode.battle.gunCoolingRate=0.1
+robocode.battle.rules.inactivityTime=450
+robocode.battle.selectedRobots=$MINE,$opponent
+EOF
+
+  if ! ( cd "$ENGINE" && "$JAVA" -Xmx512M -Dsun.io.useCanonCaches=false \
+        -cp libs/robocode.jar robocode.Robocode \
+        -battle "$battle" -nodisplay -nosound -results "$results" ) >"$VAR/duels/duel.log" 2>&1; then
+    echo "duel: battle against $opponent failed; see var/duels/duel.log" >&2
+    continue
+  fi
+
+  if [[ ! -f "$results" ]]; then
+    echo "duel: no results against $opponent -- the engine could not load one of the"
+    echo "      robots. Run bin/build once more so it re-indexes, then retry." >&2
+    continue
+  fi
+  read -r pct my their < <(python3 "$ROOT/tools/parse_results.py" "$results" "$MINE" "$opponent")
+  printf '%-32s %8s %10s %12s\n' "$opponent" "$pct" "$my" "$their"
+  total="$(python3 -c "print($total + $pct)")"
+  count=$((count + 1))
+done
+
+if [[ "$count" -gt 1 ]]; then
+  printf -- '-%.0s' {1..66}; printf '\n'
+  printf '%-32s %8s\n' "average of $count, $ROUNDS rounds" "$(python3 -c "print(f'{$total/$count:.2f}')")"
+fi

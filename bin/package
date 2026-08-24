@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# Build the jar you upload for RoboRumble.
+#
+#   bin/package           package every bot at the version in classic/version.txt
+#   bin/package Kestrel   package one
+#
+# Produces dist/<package>.<Bot>_<version>.jar containing the classes, the required
+# .properties descriptor, and the source.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/classic/engine"
+SRC="$ROOT/classic/src"
+DIST="$ROOT/dist"
+VERSION="$(cat "$ROOT/classic/version.txt" 2>/dev/null || echo 1.0)"
+
+find_jdk_bin() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/$1" ]]; then echo "$JAVA_HOME/bin/$1"; return; fi
+  local candidate
+  for candidate in "/opt/homebrew/opt/openjdk/bin/$1" "/usr/local/opt/openjdk/bin/$1"; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v "$1" >/dev/null 2>&1 && { command -v "$1"; return; }
+  echo "package: no JDK found. Install one with:  brew install openjdk" >&2; exit 1
+}
+JAR="$(find_jdk_bin jar)"
+
+"$ROOT/bin/build" >/dev/null
+mkdir -p "$DIST"
+
+staging="$ROOT/var/package"
+rm -rf "$staging"
+
+for src in "$SRC"/rafe/*.java; do
+  name="$(basename "$src" .java)"
+  [[ -n "${1:-}" && "$1" != "$name" ]] && continue
+
+  mkdir -p "$staging/rafe"
+  # The trailing glob must also catch nested classes (Bot$Wave.class); a jar missing
+  # them compiles fine here and dies the moment it runs on someone else's machine.
+  cp "$ENGINE/robots/rafe/$name"*.class "$staging/rafe/"
+  cp "$ENGINE/robots/rafe/$name.properties" "$staging/rafe/"
+  cp "$src" "$staging/rafe/"
+  # We ship the source, so say so.
+  sed -i.bak 's/^robot.java.source.included=.*/robot.java.source.included=true/' \
+    "$staging/rafe/$name.properties"
+  rm -f "$staging/rafe/$name.properties.bak"
+
+  out="$DIST/rafe.${name}_${VERSION}.jar"
+  ( cd "$staging" && "$JAR" cf "$out" rafe )
+  rm -rf "$staging"
+  echo "packaged $out"
+done
+
+echo
+echo "Upload that jar somewhere with a direct download link, then add one line to"
+echo "https://robowiki.net/wiki/RoboRumble/Participants in alphabetical order:"
+echo
+for jar in "$DIST"/*.jar; do
+  [[ -e "$jar" ]] || continue
+  base="$(basename "$jar" .jar)"
+  echo "  ${base%_*} ${base##*_},<direct-download-url>/$(basename "$jar")"
+done

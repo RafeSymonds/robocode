@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# Download the benchmark opponents into the engine's robots/ directory.
+#
+#   bin/opponents         fetch any that are missing
+#   bin/opponents --list  print the set without downloading
+#
+# These are real RoboRumble entries spanning weak to all-time top ten, pulled from
+# the community archive. Sample bots are useless for measurement -- anything that
+# works at all beats them.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROBOTS="$ROOT/classic/engine/robots"
+ARCHIVE="http://robocode-archive.strangeautomata.com/robots"
+
+# tier:jar
+BOTS=(
+  "nano:sheldor.nano.Sabreur_1.1.2"
+  "mini:kawigi.mini.Fhqwhgads_1.1"
+  "micro:davidalves.net.DuelistMicro_1.22"
+  "mini:cx.mini.Nimrod_0.55"
+  "micro:jam.micro.RaikoMicro_1.44"
+  "mid:dft.Freddie_1.32"
+  "strong:gh.GrubbmGrb_1.2.4"
+  "strong:mld.Moebius_2.9.3"
+  "top:pe.SandboxDT_3.02"
+  "top:abc.Shadow_3.83c"
+)
+
+if [[ "${1:-}" == "--list" ]]; then
+  for entry in "${BOTS[@]}"; do printf '%-8s %s\n' "${entry%%:*}" "${entry#*:}"; done
+  exit 0
+fi
+
+mkdir -p "$ROBOTS" "$ROOT/var/opponents"
+installed=0
+for entry in "${BOTS[@]}"; do
+  name="${entry#*:}"
+  jar="$name.jar"
+  marker="$ROBOTS/.$name.installed"
+  if [[ -f "$marker" ]]; then installed=$((installed + 1)); continue; fi
+
+  echo "  downloading $jar"
+  if ! curl -fsSL --retry 3 -o "$ROOT/var/opponents/$jar" "$ARCHIVE/$jar"; then
+    echo "  FAILED $jar (archive may be down or the version moved)" >&2
+    rm -f "$ROOT/var/opponents/$jar"
+    continue
+  fi
+
+  # Unpack rather than dropping the jar into robots/. Robocode 1.11.1's jar scanner
+  # throws an NPE on JDK 22+ (URLJarCollector.fileCache) that aborts the entire
+  # repository scan, which makes every robot vanish -- ours included. Loose class
+  # files in package directories load through a different code path that works.
+  unzip -qo "$ROOT/var/opponents/$jar" -d "$ROBOTS" -x 'META-INF/*' || {
+    echo "  FAILED to unpack $jar" >&2; continue
+  }
+  touch "$marker"
+  installed=$((installed + 1))
+done
+echo "opponents: $installed installed"
