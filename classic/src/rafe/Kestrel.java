@@ -3,6 +3,7 @@ package rafe;
 import robocode.AdvancedRobot;
 import robocode.BulletHitBulletEvent;
 import robocode.HitByBulletEvent;
+import robocode.HitRobotEvent;
 import robocode.Rules;
 import robocode.ScannedRobotEvent;
 import robocode.util.Utils;
@@ -43,6 +44,9 @@ public class Kestrel extends AdvancedRobot {
     /** How far ahead we look when steering away from walls. */
     private static final double WALL_STICK = 160;
 
+    /** How much the wave behind the incoming one counts when picking a direction. */
+    private static final double SECOND_WAVE_WEIGHT = 0.4;
+
     /** Range we try to hold: close enough to hit, far enough to dodge. */
     private static final double PREFERRED_DISTANCE = 500;
 
@@ -54,7 +58,7 @@ public class Kestrel extends AdvancedRobot {
     // --- Learned across rounds -------------------------------------------------
 
     /** Where enemy bullets have actually hit us, by [range][our speed][angle]. */
-    private static final double[][][] dangerStats = new double[3][3][BINS];
+    private static final double[][][][] dangerStats = new double[3][3][3][BINS];
 
     /** Where the enemy has been when our waves arrived, coarse to fine. */
     private static final double[] gunFlat = new double[BINS];
@@ -126,6 +130,7 @@ public class Kestrel extends AdvancedRobot {
             wave.fireLocation = (Point2D.Double) enemyLocation.clone();
             wave.rangeIndex = moveRangeSegment(wave.fireLocation.distance(myLocation));
             wave.speedIndex = moveSpeedSegment(myLateralSpeed);
+            wave.wallIndex = myWallSegment(wave.fireLocation, lastDirection);
             enemyWaves.add(wave);
         }
         enemyEnergy = e.getEnergy();
@@ -151,7 +156,7 @@ public class Kestrel extends AdvancedRobot {
     // =========================================================================
 
     private void surf() {
-        EnemyWave wave = nearestIncomingWave();
+        EnemyWave wave = nearestIncomingWave(null);
         Point2D.Double source;
         int direction;
 
@@ -160,18 +165,32 @@ public class Kestrel extends AdvancedRobot {
             source = enemyLocation;
             direction = lastDirection;
         } else {
+            // Dodging one bullet into the path of the next is a good way to lose. The
+            // second wave counts for less because we get another decision before it
+            // lands, and because our prediction of where we will be by then is looser.
+            EnemyWave next = nearestIncomingWave(wave);
+            double left = dangerOf(wave, -1);
+            double right = dangerOf(wave, 1);
+            if (next != null) {
+                left += SECOND_WAVE_WEIGHT * dangerOf(next, -1);
+                right += SECOND_WAVE_WEIGHT * dangerOf(next, 1);
+            }
             source = wave.fireLocation;
-            direction = dangerOf(wave, -1) < dangerOf(wave, 1) ? -1 : 1;
+            direction = left < right ? -1 : 1;
             lastDirection = direction;
         }
 
         drive(wallSmoothing(myLocation, orbitAngle(source, myLocation, direction), direction));
     }
 
-    private EnemyWave nearestIncomingWave() {
+    /** The closest wave still on its way in, ignoring {@code except}. */
+    private EnemyWave nearestIncomingWave(EnemyWave except) {
         EnemyWave nearest = null;
         double nearestGap = Double.POSITIVE_INFINITY;
         for (EnemyWave wave : enemyWaves) {
+            if (wave == except) {
+                continue;
+            }
             double gap = myLocation.distance(wave.fireLocation) - wave.distanceTraveled;
             if (gap > wave.bulletSpeed && gap < nearestGap) {
                 nearestGap = gap;
@@ -204,7 +223,7 @@ public class Kestrel extends AdvancedRobot {
         double range = Math.max(predicted.distance(wave.fireLocation), 1);
         int half = (int) Math.ceil(Math.atan(18 / range) / maxEscapeAngle(wave.bulletSpeed) * MIDDLE);
 
-        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex];
+        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
         double total = 0;
         for (int i = index - half; i <= index + half; i++) {
             total += bins[(int) limit(0, i, BINS - 1)];
@@ -292,6 +311,19 @@ public class Kestrel extends AdvancedRobot {
     }
 
     @Override
+    public void onHitRobot(HitRobotEvent e) {
+        // Point blank a shot cannot miss, and a rammer trading hits at this range
+        // comes off worse: 3 power costs us 3 and takes 16 off them.
+        if (getGunHeat() == 0 && getEnergy() > 3.1) {
+            setFire(3);
+        }
+        // A collision costs the enemy energy too, and our fire detector reads any
+        // energy drop as a shot. Re-baseline here, or the next scan invents a wave
+        // that never existed and poisons the movement statistics with it.
+        enemyEnergy = e.getEnergy();
+    }
+
+    @Override
     public void onBulletHitBullet(BulletHitBulletEvent e) {
         // We blocked it, but it still tells us exactly where that shot was aimed.
         EnemyWave wave = matchWave(e.getHitBullet().getX(), e.getHitBullet().getY(), e.getHitBullet().getPower());
@@ -318,7 +350,7 @@ public class Kestrel extends AdvancedRobot {
 
     private void logHit(EnemyWave wave, Point2D.Double at) {
         int index = factorIndex(wave, at);
-        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex];
+        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
         for (int i = 0; i < BINS; i++) {
             // Smear it: a bullet that hit here would very nearly have hit next door too.
             bins[i] += 1.0 / ((i - index) * (i - index) + 1);
@@ -494,6 +526,22 @@ public class Kestrel extends AdvancedRobot {
         return (int) limit(0, Math.abs(lateralSpeed) / 3, 2);
     }
 
+    /**
+     * How far we can keep orbiting this wave's source before a wall stops us. Being
+     * boxed in changes which angles the enemy can catch us at, so danger learned with
+     * open field behind us does not transfer to a corner.
+     */
+    private int myWallSegment(Point2D.Double source, int direction) {
+        double distance = myLocation.distance(source);
+        double bearing = absoluteBearing(source, myLocation);
+        double angle = 0;
+        while (angle < Math.PI / 2
+                && field.contains(project(source, bearing + direction * angle, distance))) {
+            angle += 0.05;
+        }
+        return (int) limit(0, angle / (Math.PI / 2) * 3, 2);
+    }
+
     // =========================================================================
     // Geometry
     // =========================================================================
@@ -529,6 +577,7 @@ public class Kestrel extends AdvancedRobot {
         int direction;
         int rangeIndex;
         int speedIndex;
+        int wallIndex;
     }
 
     private static final class GunWave {
