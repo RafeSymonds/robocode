@@ -39,19 +39,39 @@ All learning is `static`, because Robocode rebuilds the robot object every round
 
 ### Measured strength
 
-Against real RoboRumble bots, 400 rounds each:
+Against real RoboRumble bots, 250 rounds each:
 
 | Opponent | Score% | | Opponent | Score% |
 | --- | --- | --- | --- | --- |
-| dft.Freddie | 87.96 | | gh.GrubbmGrb | 73.19 |
-| kawigi.mini.Fhqwhgads | 77.89 | | jam.micro.RaikoMicro | 71.95 |
-| davidalves.net.DuelistMicro | 76.28 | | mld.Moebius | 70.47 |
-| cx.mini.Nimrod | 68.20 | | sheldor.nano.Sabreur | 67.42 |
-| pe.SandboxDT | 50.82 | | abc.Shadow | 25.57 |
+| dft.Freddie | 89.80 | | cx.mini.Nimrod | 71.47 |
+| gh.GrubbmGrb | 80.25 | | mld.Moebius | 70.17 |
+| davidalves.net.DuelistMicro | 80.02 | | jam.micro.RaikoMicro | 68.61 |
+| kawigi.mini.Fhqwhgads | 77.18 | | sheldor.nano.Sabreur | 68.59 |
+| **pe.SandboxDT** | **55.82** | | abc.Shadow | 25.56 |
 
-**66.98 average.** At RoboRumble's own 35 rounds, where the learning has less time to compound,
-it averages about **63.7**. Note this ladder is deliberately top-heavy — SandboxDT and Shadow are
-all-time top-tier bots — so it is a harsher field than the rumble as a whole.
+**68.75 average**, beating 9 of 10 — including SandboxDT, an all-time top-tier bot that was
+winning 56–44 against the first working version. Shadow remains out of reach.
+
+Note this ladder is deliberately top-heavy, so it is a harsher field than the rumble as a whole.
+
+### What actually made it stronger
+
+Every change below was A/B tested at 250+ rounds against the full ladder. The noise floor is
+±1.3, so anything smaller than that is not a result:
+
+| Change | Effect |
+| --- | --- |
+| Wall segmentation on the gun | **+2.8** |
+| Danger weighted by bullet damage, plus decay | **+2.4** |
+| Second-wave surfing, movement wall segmentation, bot-width danger | +0.5 each, inside noise |
+| Adaptive flattener | **−2.9** — reverted |
+| Multi-option surfing (5 candidate moves) | −1.1 — reverted |
+| Orbit distance, bullet power, bin count sweeps | already optimal |
+
+The diagnosis that mattered: against Shadow our bullet damage was close (1033 vs 1495) but our
+survival was 300 vs 1450. The gun was never the problem — the movement was. A control run with
+the danger statistics disabled scores 9.64 against the top tier versus 37.25 with them, so the
+surfing is doing real work; it just is not yet Shadow's equal.
 
 ## The scripts
 
