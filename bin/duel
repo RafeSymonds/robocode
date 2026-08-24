@@ -73,7 +73,8 @@ robocode.battle.rules.inactivityTime=450
 robocode.battle.selectedRobots=$MINE,$opponent
 EOF
 
-  if ! ( cd "$ENGINE" && "$JAVA" -Xmx512M -Dsun.io.useCanonCaches=false \
+  if ! ( cd "$ENGINE" && nice -n 10 "$JAVA" -Xmx512M -Dsun.io.useCanonCaches=false \
+        -Djava.awt.headless=true -Dapple.awt.UIElement=true \
         -cp libs/robocode.jar robocode.Robocode \
         -battle "$battle" -nodisplay -nosound -results "$results" ) >"$VAR/duels/duel.log" 2>&1; then
     echo "duel: battle against $opponent failed; see var/duels/duel.log" >&2

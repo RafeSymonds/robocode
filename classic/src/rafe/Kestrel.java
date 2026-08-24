@@ -47,6 +47,9 @@ public class Kestrel extends AdvancedRobot {
     /** How much the wave behind the incoming one counts when picking a direction. */
     private static final double SECOND_WAVE_WEIGHT = 0.4;
 
+    /** How much old evidence survives each new hit. 1.0 remembers everything. */
+    private static final double DANGER_DECAY = 0.97;
+
     /** Range we try to hold: close enough to hit, far enough to dodge. */
     private static final double PREFERRED_DISTANCE = 500;
 
@@ -305,9 +308,15 @@ public class Kestrel extends AdvancedRobot {
     public void onHitByBullet(HitByBulletEvent e) {
         EnemyWave wave = matchWave(e.getBullet().getX(), e.getBullet().getY(), e.getBullet().getPower());
         if (wave != null) {
-            logHit(wave, new Point2D.Double(e.getBullet().getX(), e.getBullet().getY()));
+            logHit(wave, new Point2D.Double(e.getBullet().getX(), e.getBullet().getY()),
+                    damageOf(e.getBullet().getPower()));
             enemyWaves.remove(wave);
         }
+    }
+
+    /** Robocode's damage formula. A power 3 hit costs us 16; a power 0.5 hit costs 2. */
+    private static double damageOf(double power) {
+        return 4 * power + 2 * Math.max(power - 1, 0);
     }
 
     @Override
@@ -328,7 +337,8 @@ public class Kestrel extends AdvancedRobot {
         // We blocked it, but it still tells us exactly where that shot was aimed.
         EnemyWave wave = matchWave(e.getHitBullet().getX(), e.getHitBullet().getY(), e.getHitBullet().getPower());
         if (wave != null) {
-            logHit(wave, new Point2D.Double(e.getHitBullet().getX(), e.getHitBullet().getY()));
+            logHit(wave, new Point2D.Double(e.getHitBullet().getX(), e.getHitBullet().getY()),
+                    damageOf(e.getHitBullet().getPower()));
             enemyWaves.remove(wave);
         }
     }
@@ -348,12 +358,14 @@ public class Kestrel extends AdvancedRobot {
         return best;
     }
 
-    private void logHit(EnemyWave wave, Point2D.Double at) {
+    private void logHit(EnemyWave wave, Point2D.Double at, double weight) {
         int index = factorIndex(wave, at);
         double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex][wave.wallIndex];
         for (int i = 0; i < BINS; i++) {
-            // Smear it: a bullet that hit here would very nearly have hit next door too.
-            bins[i] += 1.0 / ((i - index) * (i - index) + 1);
+            // Smear it: a bullet that hit here would very nearly have hit next door too,
+            // and fade what came before, because a strong opponent keeps changing its gun
+            // and danger learned in round three can describe a bot that no longer exists.
+            bins[i] = bins[i] * DANGER_DECAY + weight / ((i - index) * (i - index) + 1);
         }
     }
 

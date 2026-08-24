@@ -3,13 +3,15 @@
 # Benchmark a bot against the whole opponent ladder, in parallel.
 #
 #   bin/bench Kestrel                 the full ladder, 35 rounds each
-#   bin/bench Kestrel --rounds 100    more rounds, less noise
-#   bin/bench Kestrel --tier top      only one tier (nano/mini/micro/mid/strong/top)
+#   bin/bench Kestrel --rounds 250    more rounds, less noise
+#   bin/bench Kestrel --tier top      one tier (nano/mini/micro/mid/strong/top)
+#   bin/bench Kestrel --jobs 10       use more cores (default is a third of them)
 #
-# Battles run concurrently in isolated robot directories, so a full ladder costs
-# about as much wall time as its slowest single matchup. Round counts below ~75
-# are noisy enough that small tuning changes are indistinguishable -- if you are
-# comparing two versions, use 100+.
+# Battles run truly headless -- no window, no Dock icon, no stealing your cursor --
+# at low priority, and only a few at a time, so this stays usable in the background.
+#
+# Round counts below ~75 are noisy enough that small tuning changes are
+# indistinguishable. Comparing two versions? Use 250+.
 #
 set -euo pipefail
 
@@ -26,26 +28,65 @@ find_java() {
   command -v java >/dev/null 2>&1 && { command -v java; return; }
   echo "bench: no JDK found. Install one with:  brew install openjdk" >&2; exit 1
 }
-JAVA="$(find_java)"
-export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
-export PATH="$JAVA_HOME/bin:$PATH"
+
+# Robocode still spins up a windowed application context under -nodisplay, which on
+# macOS takes focus and puts an icon in the Dock. Real headless mode stops that.
+# nice keeps ten JVMs from making the machine feel stuck.
+run_battle() { # opponent bot rounds
+  local opponent="$1" bot="$2" rounds="$3"
+  local java dir
+  java="$(find_java)"
+  dir="$WORK/$opponent"
+
+  mkdir -p "$dir/robots"
+  # Each battle needs its own robot directory: they all write a robot database,
+  # and sharing one corrupts concurrent runs.
+  cp -R "$ENGINE/robots/." "$dir/robots/"
+  rm -f "$dir/robots/robot.database"
+
+  cat > "$dir/duel.battle" <<EOF
+robocode.battleField.width=800
+robocode.battleField.height=600
+robocode.battle.numRounds=$rounds
+robocode.battle.gunCoolingRate=0.1
+robocode.battle.rules.inactivityTime=450
+robocode.battle.selectedRobots=rafe.$bot*,$opponent*
+EOF
+
+  ( cd "$ENGINE" && nice -n 10 "$java" -Xmx512M \
+      -Djava.awt.headless=true -Dapple.awt.UIElement=true \
+      -DROBOTPATH="$dir/robots" \
+      -cp libs/robocode.jar robocode.Robocode \
+      -battle "$dir/duel.battle" -nodisplay -nosound -results "$dir/results" ) >"$dir/log" 2>&1 || true
+}
+
+# Re-invoked by xargs, one process per matchup. bash 3.2 has no `wait -n`, so xargs
+# does the throttling.
+if [[ "${1:-}" == "--worker" ]]; then
+  run_battle "$2" "$3" "$4"
+  exit 0
+fi
 
 ROUNDS=35
 TIER=""
 BOT=""
+JOBS="$(( $(sysctl -n hw.ncpu 2>/dev/null || echo 4) / 3 ))"
+[[ "$JOBS" -lt 2 ]] && JOBS=2
 skip=""
 for arg in "$@"; do
   case "$skip" in
     rounds) ROUNDS="$arg"; skip=""; continue ;;
     tier)   TIER="$arg";   skip=""; continue ;;
+    jobs)   JOBS="$arg";   skip=""; continue ;;
   esac
   case "$arg" in
     --rounds) skip=rounds ;;
     --tier)   skip=tier ;;
+    --jobs)   skip=jobs ;;
     *)        BOT="$arg" ;;
   esac
 done
-[[ -n "$BOT" ]] || { sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
+[[ -n "$BOT" ]] || { sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
 
 [[ -f "$ENGINE/libs/robocode.jar" ]] || { echo "bench: engine missing, run bin/classic start" >&2; exit 1; }
 "$ROOT/bin/build" >/dev/null
@@ -60,30 +101,9 @@ done < <("$ROOT/bin/opponents" --list)
 
 rm -rf "$WORK"; mkdir -p "$WORK"
 
-echo "running ${#opponents[@]} matchups x $ROUNDS rounds in parallel..."
-for opponent in "${opponents[@]}"; do
-  (
-    dir="$WORK/$opponent"
-    mkdir -p "$dir/robots"
-    # Each battle needs its own robot directory: they all write a robot database,
-    # and sharing one corrupts concurrent runs.
-    cp -R "$ENGINE/robots/." "$dir/robots/"
-    rm -f "$dir/robots/robot.database"
-
-    cat > "$dir/duel.battle" <<EOF
-robocode.battleField.width=800
-robocode.battleField.height=600
-robocode.battle.numRounds=$ROUNDS
-robocode.battle.gunCoolingRate=0.1
-robocode.battle.rules.inactivityTime=450
-robocode.battle.selectedRobots=rafe.$BOT*,$opponent*
-EOF
-    ( cd "$ENGINE" && "$JAVA" -Xmx512M -DROBOTPATH="$dir/robots" \
-        -cp libs/robocode.jar robocode.Robocode \
-        -battle "$dir/duel.battle" -nodisplay -nosound -results "$dir/results" ) >"$dir/log" 2>&1 || true
-  ) &
-done
-wait
+echo "running ${#opponents[@]} matchups x $ROUNDS rounds, $JOBS at a time..."
+printf '%s\n' "${opponents[@]}" \
+  | xargs -P "$JOBS" -I{} "${BASH_SOURCE[0]}" --worker {} "$BOT" "$ROUNDS"
 
 printf '\n%-32s %8s %10s %12s\n' "opponent" "score%" "my score" "their score"
 printf -- '-%.0s' {1..66}; printf '\n'
