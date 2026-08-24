@@ -330,7 +330,7 @@ public class Kestrel extends AdvancedRobot {
         double angle = 0;
         while (angle < Math.PI / 2
                 && field.contains(project(source, bearing + direction * angle, distance))) {
-            angle += 0.05;
+            angle += 0.1;
         }
         return angle / (Math.PI / 2);
     }
@@ -370,7 +370,7 @@ public class Kestrel extends AdvancedRobot {
                     < wave.distanceTraveled + (ticks + 1) * wave.bulletSpeed) {
                 return position;
             }
-            if (ticks > 500) {
+            if (ticks > 120) {
                 return position;
             }
         }
@@ -387,8 +387,8 @@ public class Kestrel extends AdvancedRobot {
     }
 
     private double wallSmoothing(Point2D.Double from, double angle, int direction) {
-        for (int i = 0; i < 200 && !field.contains(project(from, angle, WALL_STICK)); i++) {
-            angle += direction * 0.05;
+        for (int i = 0; i < 40 && !field.contains(project(from, angle, WALL_STICK)); i++) {
+            angle += direction * 0.1;
         }
         return angle;
     }
@@ -626,7 +626,7 @@ public class Kestrel extends AdvancedRobot {
         double angle = 0;
         while (angle < Math.PI / 2
                 && field.contains(project(myLocation, absBearing + direction * angle, distance))) {
-            angle += 0.05;
+            angle += 0.1;
         }
         return (int) limit(0, angle / (Math.PI / 2) * WALL_SEGMENTS, WALL_SEGMENTS - 1);
     }
@@ -658,7 +658,7 @@ public class Kestrel extends AdvancedRobot {
         double angle = 0;
         while (angle < Math.PI / 2
                 && field.contains(project(source, bearing + direction * angle, distance))) {
-            angle += 0.05;
+            angle += 0.1;
         }
         return (int) limit(0, angle / (Math.PI / 2) * 3, 2);
     }

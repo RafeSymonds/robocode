@@ -27,6 +27,14 @@ BOTS=(
   "strong:mld.Moebius_2.9.3"
   "top:pe.SandboxDT_3.02"
   "top:abc.Shadow_3.83c"
+  "nano:stelo.MirrorNano_1.4"
+  "nano:nat.nano.Ocnirp_1.73"
+  "mini:kawigi.sbf.FloodMini_1.4"
+  "micro:simonton.micro.WeeklongObsession_3.4.1"
+  "mid:emp.Yngwie_1.11"
+  "mid:rz.GlowBlow_2.31"
+  "strong:kc.serpent.Hydra_0.21"
+  "top:voidious.Dookious_1.573c"
 )
 
 if [[ "${1:-}" == "--list" ]]; then
