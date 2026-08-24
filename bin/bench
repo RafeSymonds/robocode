@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+#
+# Benchmark a bot against the whole opponent ladder, in parallel.
+#
+#   bin/bench Kestrel                 the full ladder, 35 rounds each
+#   bin/bench Kestrel --rounds 100    more rounds, less noise
+#   bin/bench Kestrel --tier top      only one tier (nano/mini/micro/mid/strong/top)
+#
+# Battles run concurrently in isolated robot directories, so a full ladder costs
+# about as much wall time as its slowest single matchup. Round counts below ~75
+# are noisy enough that small tuning changes are indistinguishable -- if you are
+# comparing two versions, use 100+.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENGINE="$ROOT/classic/engine"
+WORK="$ROOT/var/bench"
+
+find_java() {
+  if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/java" ]]; then echo "$JAVA_HOME/bin/java"; return; fi
+  local candidate
+  for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java; do
+    [[ -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  command -v java >/dev/null 2>&1 && { command -v java; return; }
+  echo "bench: no JDK found. Install one with:  brew install openjdk" >&2; exit 1
+}
+JAVA="$(find_java)"
+export JAVA_HOME="$(cd "$(dirname "$JAVA")/.." && pwd)"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+ROUNDS=35
+TIER=""
+BOT=""
+skip=""
+for arg in "$@"; do
+  case "$skip" in
+    rounds) ROUNDS="$arg"; skip=""; continue ;;
+    tier)   TIER="$arg";   skip=""; continue ;;
+  esac
+  case "$arg" in
+    --rounds) skip=rounds ;;
+    --tier)   skip=tier ;;
+    *)        BOT="$arg" ;;
+  esac
+done
+[[ -n "$BOT" ]] || { sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
+
+[[ -f "$ENGINE/libs/robocode.jar" ]] || { echo "bench: engine missing, run bin/classic start" >&2; exit 1; }
+"$ROOT/bin/build" >/dev/null
+
+# The ladder is defined once, in bin/opponents.
+opponents=()
+while read -r tier jar; do
+  [[ -n "$TIER" && "$tier" != "$TIER" ]] && continue
+  opponents+=("${jar%_*}")
+done < <("$ROOT/bin/opponents" --list)
+[[ ${#opponents[@]} -gt 0 ]] || { echo "bench: no opponents (bad --tier?)" >&2; exit 1; }
+
+rm -rf "$WORK"; mkdir -p "$WORK"
+
+echo "running ${#opponents[@]} matchups x $ROUNDS rounds in parallel..."
+for opponent in "${opponents[@]}"; do
+  (
+    dir="$WORK/$opponent"
+    mkdir -p "$dir/robots"
+    # Each battle needs its own robot directory: they all write a robot database,
+    # and sharing one corrupts concurrent runs.
+    cp -R "$ENGINE/robots/." "$dir/robots/"
+    rm -f "$dir/robots/robot.database"
+
+    cat > "$dir/duel.battle" <<EOF
+robocode.battleField.width=800
+robocode.battleField.height=600
+robocode.battle.numRounds=$ROUNDS
+robocode.battle.gunCoolingRate=0.1
+robocode.battle.rules.inactivityTime=450
+robocode.battle.selectedRobots=rafe.$BOT*,$opponent*
+EOF
+    ( cd "$ENGINE" && "$JAVA" -Xmx512M -DROBOTPATH="$dir/robots" \
+        -cp libs/robocode.jar robocode.Robocode \
+        -battle "$dir/duel.battle" -nodisplay -nosound -results "$dir/results" ) >"$dir/log" 2>&1 || true
+  ) &
+done
+wait
+
+printf '\n%-32s %8s %10s %12s\n' "opponent" "score%" "my score" "their score"
+printf -- '-%.0s' {1..66}; printf '\n'
+
+total=0
+count=0
+for opponent in "${opponents[@]}"; do
+  results="$WORK/$opponent/results"
+  if [[ ! -f "$results" ]]; then
+    printf '%-32s %8s\n' "$opponent" "FAILED"
+    continue
+  fi
+  read -r pct my their < <(python3 "$ROOT/tools/parse_results.py" "$results" "rafe.$BOT" "$opponent")
+  printf '%-32s %8s %10s %12s\n' "$opponent" "$pct" "$my" "$their"
+  total="$(python3 -c "print($total + $pct)")"
+  count=$((count + 1))
+done
+
+printf -- '-%.0s' {1..66}; printf '\n'
+printf '%-32s %8s\n' "average of $count, $ROUNDS rounds" "$(python3 -c "print(f'{$total/$count:.2f}')" )"

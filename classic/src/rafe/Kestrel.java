@@ -49,6 +49,7 @@ public class Kestrel extends AdvancedRobot {
     private static final int DIST_SEGMENTS = 5;
     private static final int VEL_SEGMENTS = 5;
     private static final int ACCEL_SEGMENTS = 3;
+    private static final int WALL_SEGMENTS = 3;
 
     // --- Learned across rounds -------------------------------------------------
 
@@ -61,6 +62,8 @@ public class Kestrel extends AdvancedRobot {
     private static final double[][][] gunByRangeSpeed = new double[DIST_SEGMENTS][VEL_SEGMENTS][BINS];
     private static final double[][][][] gunFine =
             new double[DIST_SEGMENTS][VEL_SEGMENTS][ACCEL_SEGMENTS][BINS];
+    private static final double[][][][] gunByWall =
+            new double[DIST_SEGMENTS][VEL_SEGMENTS][WALL_SEGMENTS][BINS];
 
     // --- Per round -------------------------------------------------------------
 
@@ -188,10 +191,25 @@ public class Kestrel extends AdvancedRobot {
         }
     }
 
-    /** How often we have been hit at the spot this wave would catch us going {@code direction}. */
+    /**
+     * How often we have been hit around the spot this wave would catch us going
+     * {@code direction}. A tank is 36 units wide, so a bullet aimed a little off still
+     * connects; scoring a single angle understates the risk of standing next to a
+     * place we keep getting shot.
+     */
     private double dangerOf(EnemyWave wave, int direction) {
-        int index = factorIndex(wave, predictPosition(wave, direction));
-        return dangerStats[wave.rangeIndex][wave.speedIndex][index];
+        Point2D.Double predicted = predictPosition(wave, direction);
+        int index = factorIndex(wave, predicted);
+
+        double range = Math.max(predicted.distance(wave.fireLocation), 1);
+        int half = (int) Math.ceil(Math.atan(18 / range) / maxEscapeAngle(wave.bulletSpeed) * MIDDLE);
+
+        double[] bins = dangerStats[wave.rangeIndex][wave.speedIndex];
+        double total = 0;
+        for (int i = index - half; i <= index + half; i++) {
+            total += bins[(int) limit(0, i, BINS - 1)];
+        }
+        return total;
     }
 
     /**
@@ -322,6 +340,7 @@ public class Kestrel extends AdvancedRobot {
         int range = rangeSegment(e.getDistance());
         int speed = speedSegment(enemyLateralSpeed);
         int accel = accelSegment(enemyLateralSpeed, lastEnemyLateralSpeed);
+        int wall = wallSegment(e.getDistance(), absBearing, enemyDirection);
 
         // Launch a wave every tick, loaded or not. Shots we never took still teach the
         // gun where this enemy likes to be.
@@ -335,9 +354,10 @@ public class Kestrel extends AdvancedRobot {
         wave.range = range;
         wave.speed = speed;
         wave.accel = accel;
+        wave.wall = wall;
         gunWaves.add(wave);
 
-        double factor = (double) (bestBin(range, speed, accel) - MIDDLE) / MIDDLE;
+        double factor = (double) (bestBin(range, speed, accel, wall) - MIDDLE) / MIDDLE;
         double aim = absBearing + factor * wave.maxEscape * enemyDirection;
 
         double gunTurn = Utils.normalRelativeAngle(aim - getGunHeadingRadians());
@@ -370,6 +390,7 @@ public class Kestrel extends AdvancedRobot {
         smear(gunByRange[wave.range], index);
         smear(gunByRangeSpeed[wave.range][wave.speed], index);
         smear(gunFine[wave.range][wave.speed][wave.accel], index);
+        smear(gunByWall[wave.range][wave.speed][wave.wall], index);
     }
 
     private static void smear(double[] bins, int index) {
@@ -383,12 +404,13 @@ public class Kestrel extends AdvancedRobot {
      * buffer cannot outvote a well-populated coarse one, and heavier weights on the
      * specific buffers let them take over once they have seen enough.
      */
-    private int bestBin(int range, int speed, int accel) {
+    private int bestBin(int range, int speed, int accel, int wall) {
         double[] combined = new double[BINS];
         blend(combined, gunFlat, 1);
         blend(combined, gunByRange[range], 2);
         blend(combined, gunByRangeSpeed[range][speed], 4);
         blend(combined, gunFine[range][speed][accel], 8);
+        blend(combined, gunByWall[range][speed][wall], 8);
 
         int best = MIDDLE; // head-on until we have learned anything
         for (int i = 0; i < BINS; i++) {
@@ -440,6 +462,20 @@ public class Kestrel extends AdvancedRobot {
 
     private static int speedSegment(double lateralSpeed) {
         return (int) limit(0, Math.abs(lateralSpeed) * VEL_SEGMENTS / 8.5, VEL_SEGMENTS - 1);
+    }
+
+    /**
+     * How much room the enemy has left to keep sliding the way they are going, as a
+     * share of a quarter circle around us. A bot with a wall coming up cannot keep
+     * running, which is exactly when their guess factor stops being uniform.
+     */
+    private int wallSegment(double distance, double absBearing, int direction) {
+        double angle = 0;
+        while (angle < Math.PI / 2
+                && field.contains(project(myLocation, absBearing + direction * angle, distance))) {
+            angle += 0.05;
+        }
+        return (int) limit(0, angle / (Math.PI / 2) * WALL_SEGMENTS, WALL_SEGMENTS - 1);
     }
 
     private static int accelSegment(double now, double before) {
@@ -505,5 +541,6 @@ public class Kestrel extends AdvancedRobot {
         int range;
         int speed;
         int accel;
+        int wall;
     }
 }
