@@ -52,6 +52,17 @@ public class Kestrel extends AdvancedRobot {
     /** Range we try to hold: close enough to hit, far enough to dodge. */
     private static final double PREFERRED_DISTANCE = 500;
 
+    /**
+     * How hard we pull back to that range, as a share of the perpendicular.
+     *
+     * This was the throttle on the whole movement and it was set far too low. At 0.3 the
+     * orbit stayed nearly perpendicular and the range drifted to whatever the opponent
+     * wanted; letting the correction go all the way to the perpendicular costs some of
+     * the dodge on any one wave and is worth more than a point and a half, because being
+     * at the range we chose matters more than the shape of any single evasion.
+     */
+    private static final double DISTANCE_URGENCY = 1.0;
+
     private static final int DIST_SEGMENTS = 5;
     private static final int VEL_SEGMENTS = 5;
     private static final int ACCEL_SEGMENTS = 3;
@@ -501,7 +512,8 @@ public class Kestrel extends AdvancedRobot {
      * enemy chooses; the tilt keeps that from becoming point blank.
      */
     private double orbitAngle(Point2D.Double source, Point2D.Double from, int direction) {
-        double lean = limit(-0.3, (PREFERRED_DISTANCE - from.distance(source)) / PREFERRED_DISTANCE, 0.3);
+        double lean = limit(-DISTANCE_URGENCY,
+                (PREFERRED_DISTANCE - from.distance(source)) / PREFERRED_DISTANCE, DISTANCE_URGENCY);
         return absoluteBearing(source, from) + direction * (Math.PI / 2) * (1 - lean);
     }
 
