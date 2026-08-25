@@ -114,6 +114,16 @@ on classic Robocode, not Tank Royale. Engine 1.11.1, pinned in `bin/classic` (`V
   35. Several confidently-reasoned improvements measured negative, including three flatteners
   and an accuracy-adaptive firepower scheme whose underlying energy analysis was simply wrong
   (the break-even hit rate is 1/7, not 1/3, because damage dealt is worth energy too).
+- **The rumble scores 35-round battles, not 250.** A learning bot behaves differently in a
+  short match, and a change can be worth a point at 250 rounds and nothing at 35. Tune at 250
+  for the tighter noise, then confirm at 35 before believing it.
+- **Watch for `has skipped too many turns` in battle logs, not just `is not stopping`.** A
+  skipped turn is a turn the bot spends with no orders. It was an O(n*k) nearest-neighbour
+  search: keeping the k best by rescanning all k slots on every replacement. A heap with the
+  worst on top fixed it and made a four-times-larger memory cheaper than the old small one.
+- **Anything tuned early is probably wrong now.** The neighbour count, the range correction and
+  the gun's memory were all set when the bot was much weaker, and all three were badly off once
+  the rest improved. Re-measure old constants after any structural change.
 - **Fixed segmentation was the ceiling.** Splitting sparse evidence across buckets is what made
   every finer movement decision fail. KNN over continuous features fixed that. If a change that
   should obviously help measures as noise, suspect the model is data-starved rather than the
