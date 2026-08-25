@@ -122,8 +122,15 @@ public class Kestrel extends AdvancedRobot {
     private int enemyTicksSinceReversal;
     private Double aimFactor;
 
-    /** Neighbours consulted, as a multiple of the square root of experience. */
-    private static final double K_SCALE = 0.35;
+    /**
+     * Neighbours consulted, as a multiple of the square root of experience.
+     *
+     * Tuned at 0.35 when the danger model was new and re-measured much higher once the
+     * rest of the bot improved: 0.55, 0.8 and 1.3 all beat it, and it falls away again by
+     * 2.2. Consulting every record regardless of similarity is four points worse, so the
+     * locality is doing real work -- there was simply never enough of it.
+     */
+    private static final double K_SCALE = 1.3;
 
     /** Relative importance of each feature when judging similarity. */
     private static final double[] FEATURE_WEIGHTS = {2.0, 1.0, 1.0, 1.5, 1.5, 1.0};
